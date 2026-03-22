@@ -39,6 +39,12 @@ export default function TransactionsPage() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
 
+  // 오늘 날짜 (YYYY-MM-DD 형식)
+  const getTodayString = () => {
+    const today = new Date()
+    return today.toISOString().split('T')[0]
+  }
+
   // 폼 데이터
   const [formData, setFormData] = useState({
     product_id: '',
@@ -48,7 +54,8 @@ export default function TransactionsPage() {
     quantity: 0,
     channel: '',
     note: '',
-    lot_number: ''           // 로트번호 (입고 시 필수, 형식: YYMMDD-NN)
+    lot_number: '',          // 로트번호 (입고 시 필수, 형식: YYMMDD-NN)
+    transaction_date: ''     // 거래 날짜 (기본값: 오늘)
   })
 
   // 로트번호 형식 검증 (YYMMDD-NN)
@@ -135,32 +142,40 @@ export default function TransactionsPage() {
       return
     }
 
+    // 날짜 처리: 선택한 날짜 또는 오늘
+    const transactionDate = formData.transaction_date
+      ? new Date(formData.transaction_date + 'T09:00:00').toISOString()
+      : new Date().toISOString()
+
     // 이동 처리
     if (formData.type === '이동') {
       const fromWarehouse = warehouses.find(w => w.id === formData.warehouse_id)
       const toWarehouse = warehouses.find(w => w.id === formData.to_warehouse_id)
-      const noteText = formData.note || '창고 이동'
 
-      // 1. 출고 트랜잭션 (from 창고)
+      // 이동 시 출발 창고 재고 부족 체크
+      const { data: fromInvCheck } = await supabase
+        .from('inventory')
+        .select('quantity')
+        .eq('product_id', formData.product_id)
+        .eq('warehouse_id', formData.warehouse_id)
+        .gt('quantity', 0)
+
+      const fromTotal = (fromInvCheck || []).reduce((sum, inv) => sum + inv.quantity, 0)
+      if (fromTotal < formData.quantity) {
+        alert(`재고 부족!\n\n${fromWarehouse?.name} 가용 재고: ${fromTotal.toLocaleString()}개\n요청: ${formData.quantity.toLocaleString()}개`)
+        return
+      }
+
+      // 이동 트랜잭션 (단일 레코드)
       await supabase.from('transactions').insert([{
         product_id: formData.product_id,
         warehouse_id: formData.warehouse_id,
-        type: '출고',
+        type: '이동',
         quantity: formData.quantity,
         channel: null,
-        note: `[이동] ${noteText} → ${toWarehouse?.name}`,
-        recorded_by: profile?.name || null
-      }])
-
-      // 2. 입고 트랜잭션 (to 창고)
-      await supabase.from('transactions').insert([{
-        product_id: formData.product_id,
-        warehouse_id: formData.to_warehouse_id,
-        type: '입고',
-        quantity: formData.quantity,
-        channel: null,
-        note: `[이동] ${noteText} ← ${fromWarehouse?.name}`,
-        recorded_by: profile?.name || null
+        note: `${fromWarehouse?.name} → ${toWarehouse?.name}${formData.note ? ` (${formData.note})` : ''}`,
+        recorded_by: profile?.name || null,
+        created_at: transactionDate
       }])
 
       // 3. from 창고 재고 감소
@@ -200,6 +215,24 @@ export default function TransactionsPage() {
       alert(`이동 완료!\n${fromWarehouse?.name} → ${toWarehouse?.name}`)
     } else {
       // 일반 입고/출고 처리
+
+      // 출고인 경우: 재고 부족 체크를 먼저 수행
+      if (formData.type === '출고') {
+        const { data: inventoryLots } = await supabase
+          .from('inventory')
+          .select('*')
+          .eq('product_id', formData.product_id)
+          .eq('warehouse_id', formData.warehouse_id)
+          .gt('quantity', 0)
+          .order('lot_number', { ascending: true })
+
+        const totalAvailable = (inventoryLots || []).reduce((sum, lot) => sum + lot.quantity, 0)
+        if (totalAvailable < formData.quantity) {
+          alert(`재고 부족!\n\n요청: ${formData.quantity.toLocaleString()}개\n가용 재고: ${totalAvailable.toLocaleString()}개\n부족: ${(formData.quantity - totalAvailable).toLocaleString()}개`)
+          return
+        }
+      }
+
       // 1. 입출고 기록 저장
       const { error: txError } = await supabase
         .from('transactions')
@@ -210,7 +243,8 @@ export default function TransactionsPage() {
           quantity: formData.quantity,
           channel: formData.channel || null,
           note: formData.note || null,
-          recorded_by: profile?.name || null
+          recorded_by: profile?.name || null,
+          created_at: transactionDate
         }])
 
       if (txError) {
@@ -248,24 +282,29 @@ export default function TransactionsPage() {
             }])
         }
       } else {
-        // 출고: FIFO (로트번호 오름차순으로 가장 오래된 로트에서 차감)
-        const { data: existingInventory } = await supabase
+        // 출고: FIFO 순차 차감 (로트번호 오름차순 = 오래된 것부터)
+        const { data: inventoryLots } = await supabase
           .from('inventory')
           .select('*')
           .eq('product_id', formData.product_id)
           .eq('warehouse_id', formData.warehouse_id)
+          .gt('quantity', 0)
           .order('lot_number', { ascending: true })
-          .limit(1)
-          .single()
 
-        if (existingInventory) {
+        let remaining = formData.quantity
+        for (const lot of (inventoryLots || [])) {
+          if (remaining <= 0) break
+
+          const deduct = Math.min(lot.quantity, remaining)
           await supabase
             .from('inventory')
             .update({
-              quantity: existingInventory.quantity - formData.quantity,
+              quantity: lot.quantity - deduct,
               updated_at: new Date().toISOString()
             })
-            .eq('id', existingInventory.id)
+            .eq('id', lot.id)
+
+          remaining -= deduct
         }
       }
 
@@ -280,7 +319,8 @@ export default function TransactionsPage() {
       quantity: 0,
       channel: '',
       note: '',
-      lot_number: ''
+      lot_number: '',
+      transaction_date: ''
     })
     setShowForm(false)
     fetchData()
@@ -292,26 +332,75 @@ export default function TransactionsPage() {
     if (!confirm(confirmMsg)) return
 
     try {
-      // 1. 재고 복원 (입고였으면 빼기, 출고였으면 더하기)
-      const { data: inventory } = await supabase
-        .from('inventory')
-        .select('id, quantity')
-        .eq('product_id', tx.product_id)
-        .eq('warehouse_id', tx.warehouse_id)
-        .single()
+      if (tx.type === '이동') {
+        // 이동 삭제: 양쪽 창고 재고 복원
+        // note 형식: "출고창고 → 입고창고" 또는 "출고창고 → 입고창고 (메모)"
+        const noteMatch = tx.note?.match(/^(.+?) → (.+?)(?:\s*\(|$)/)
+        if (noteMatch) {
+          const fromWarehouseName = noteMatch[1].trim()
+          const toWarehouseName = noteMatch[2].trim()
 
-      if (inventory) {
-        const restoredQty = tx.type === '입고'
-          ? inventory.quantity - tx.quantity  // 입고 삭제 → 재고 감소
-          : inventory.quantity + tx.quantity  // 출고 삭제 → 재고 증가
+          // from 창고 찾기 (출고한 창고 → 재고 복원)
+          const fromWarehouse = warehouses.find(w => w.name === fromWarehouseName)
+          // to 창고 찾기 (입고한 창고 → 재고 감소)
+          const toWarehouse = warehouses.find(w => w.name === toWarehouseName)
 
-        await supabase
+          // from 창고 재고 복원 (+ quantity)
+          if (fromWarehouse) {
+            const { data: fromInv } = await supabase
+              .from('inventory')
+              .select('id, quantity')
+              .eq('product_id', tx.product_id)
+              .eq('warehouse_id', fromWarehouse.id)
+              .single()
+
+            if (fromInv) {
+              await supabase
+                .from('inventory')
+                .update({ quantity: fromInv.quantity + tx.quantity, updated_at: new Date().toISOString() })
+                .eq('id', fromInv.id)
+            }
+          }
+
+          // to 창고 재고 감소 (- quantity)
+          if (toWarehouse) {
+            const { data: toInv } = await supabase
+              .from('inventory')
+              .select('id, quantity')
+              .eq('product_id', tx.product_id)
+              .eq('warehouse_id', toWarehouse.id)
+              .single()
+
+            if (toInv) {
+              await supabase
+                .from('inventory')
+                .update({ quantity: toInv.quantity - tx.quantity, updated_at: new Date().toISOString() })
+                .eq('id', toInv.id)
+            }
+          }
+        }
+      } else {
+        // 일반 입고/출고 삭제
+        const { data: inventory } = await supabase
           .from('inventory')
-          .update({ quantity: restoredQty, updated_at: new Date().toISOString() })
-          .eq('id', inventory.id)
+          .select('id, quantity')
+          .eq('product_id', tx.product_id)
+          .eq('warehouse_id', tx.warehouse_id)
+          .single()
+
+        if (inventory) {
+          const restoredQty = tx.type === '입고'
+            ? inventory.quantity - tx.quantity  // 입고 삭제 → 재고 감소
+            : inventory.quantity + tx.quantity  // 출고 삭제 → 재고 증가
+
+          await supabase
+            .from('inventory')
+            .update({ quantity: restoredQty, updated_at: new Date().toISOString() })
+            .eq('id', inventory.id)
+        }
       }
 
-      // 2. 트랜잭션 삭제
+      // 트랜잭션 삭제
       await supabase
         .from('transactions')
         .delete()
@@ -405,6 +494,17 @@ export default function TransactionsPage() {
                   placeholder="예: 500"
                   value={formData.quantity || ''}
                   onChange={(e) => setFormData({...formData, quantity: Number(e.target.value)})}
+                  className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  날짜 <span className="text-gray-400 font-normal">(기본: 오늘)</span>
+                </label>
+                <input
+                  type="date"
+                  value={formData.transaction_date || getTodayString()}
+                  onChange={(e) => setFormData({...formData, transaction_date: e.target.value})}
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
                 />
               </div>
@@ -535,9 +635,25 @@ export default function TransactionsPage() {
             ) : (
               <div className="space-y-4">
                 {transactions.map((tx) => {
-                  // 내부 이동인지 확인 (note에 [이동] 또는 [샘플(이동)] 포함)
-                  const isTransfer = tx.note?.includes('[이동]') || tx.note?.includes('[샘플(이동)]')
+                  // 내부 이동인지 확인 (type이 '이동'이거나, note에 [이동] 또는 [샘플(이동)] 포함)
+                  const isTransfer = tx.type === '이동' || tx.note?.includes('[이동]') || tx.note?.includes('[샘플(이동)]')
                   const displayType = isTransfer ? '이동' : tx.type
+
+                  // 이동인 경우 note에서 창고 정보 추출 (형식: "창고A → 창고B" 또는 "창고A → 창고B (메모)")
+                  let transferInfo = ''
+                  let additionalNote = ''
+                  if (isTransfer && tx.note) {
+                    const match = tx.note.match(/^(.+?) → (.+?)(?:\s*\((.+)\))?$/)
+                    if (match) {
+                      transferInfo = `${match[1]} → ${match[2]}`
+                      additionalNote = match[3] || ''
+                    } else if (tx.note.includes('[이동]')) {
+                      // 기존 형식: "[이동] 메모 → 창고명"
+                      transferInfo = tx.note.replace('[이동]', '').trim()
+                    } else {
+                      transferInfo = tx.note
+                    }
+                  }
 
                   return (
                   <div key={tx.id} className="flex items-center justify-between border-b pb-4">
@@ -556,9 +672,14 @@ export default function TransactionsPage() {
                           {tx.products?.product_name || '(삭제된 제품)'}
                         </p>
                         <p className="text-sm text-gray-500">
-                          {tx.warehouses?.name} {tx.channel && `→ ${tx.channel}`}
+                          {isTransfer ? transferInfo : (
+                            <>{tx.warehouses?.name} {tx.channel && `→ ${tx.channel}`}</>
+                          )}
                         </p>
-                        {tx.note && (
+                        {isTransfer && additionalNote && (
+                          <p className="text-sm text-gray-400">메모: {additionalNote}</p>
+                        )}
+                        {!isTransfer && tx.note && (
                           <p className="text-sm text-gray-400">메모: {tx.note}</p>
                         )}
                       </div>
@@ -566,9 +687,13 @@ export default function TransactionsPage() {
                     <div className="flex items-center gap-4">
                       <div className="text-right">
                         <p className={`font-semibold text-lg ${
-                          tx.type === '입고' ? 'text-green-600' : 'text-red-600'
+                          isTransfer
+                            ? 'text-blue-600'
+                            : tx.type === '입고'
+                              ? 'text-green-600'
+                              : 'text-red-600'
                         }`}>
-                          {tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}개
+                          {isTransfer ? '↔' : tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}개
                         </p>
                         <p className="text-sm text-gray-500">
                           {new Date(tx.created_at).toLocaleDateString('ko-KR')}

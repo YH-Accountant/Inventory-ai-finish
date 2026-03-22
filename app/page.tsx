@@ -97,6 +97,7 @@ export default function Home() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [inventory, setInventory] = useState<InventoryItem[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [todayCount, setTodayCount] = useState(0)
   const [expiringLots, setExpiringLots] = useState<ExpiringLot[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedWarehouse, setSelectedWarehouse] = useState('전체')
@@ -179,10 +180,19 @@ export default function Home() {
       .order('created_at', { ascending: false })
       .limit(10)
 
+    // 오늘 입출고 건수
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const { count: todayTxCount } = await supabase
+      .from('transactions')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', todayStart.toISOString())
+
     setProducts(productsData || [])
     setWarehouses(warehousesData || [])
     setInventory(inventoryData || [])
     setTransactions(transactionsData || [])
+    setTodayCount(todayTxCount || 0)
 
     // 유통기한 임박 로트 계산
     const expiring: ExpiringLot[] = []
@@ -248,7 +258,52 @@ export default function Home() {
     setAiReport(null)
 
     try {
-      const response = await fetch('/api/report', { method: 'POST' })
+      // 리포트용: 이번 달 전체 트랜잭션 조회 (대시보드의 10건 제한과 별도)
+      const monthStart = new Date()
+      monthStart.setDate(1)
+      monthStart.setHours(0, 0, 0, 0)
+
+      const { data: allMonthTransactions } = await supabase
+        .from('transactions')
+        .select(`*, products (*), warehouses (*)`)
+        .gte('created_at', monthStart.toISOString())
+        .order('created_at', { ascending: false })
+
+      // 클라이언트에서 가져온 데이터를 API에 전달 (RLS 우회)
+      const response = await fetch('/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inventory: inventory.map(i => ({
+            quantity: i.quantity,
+            lot_number: i.lot_number,
+            product_name: i.products?.product_name,
+            product_code: i.products?.product_code,
+            product_group: i.products?.product_group,
+            shelf_life_months: i.products?.shelf_life_months,
+            warehouse_name: i.warehouses?.name
+          })),
+          transactions: (allMonthTransactions || []).map(t => ({
+            type: t.type,
+            quantity: t.quantity,
+            channel: t.channel,
+            created_at: t.created_at,
+            product_name: t.products?.product_name
+          })),
+          warehouses: warehouses.map(w => ({ name: w.name })),
+          // expiringLots 필드명 변환 (API 형식에 맞춤)
+          expiringLots: expiringLots.map(lot => ({
+            productName: lot.product?.product_name,
+            lotNumber: lot.lot_number,
+            quantity: lot.quantity,
+            daysLeft: lot.daysRemaining,
+            status: lot.status,
+            warehouseName: inventory.find(i =>
+              i.products?.id === lot.product?.id && i.lot_number === lot.lot_number
+            )?.warehouses?.name || '알수없음'
+          }))
+        })
+      })
       const data = await response.json()
 
       if (data.error) {
@@ -349,7 +404,7 @@ export default function Home() {
               </div>
               <div className="bg-white rounded-lg shadow p-4">
                 <h3 className="text-sm font-medium text-gray-500">오늘 입출고</h3>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{transactions.length}건</p>
+                <p className="text-2xl font-bold text-gray-900 mt-1">{todayCount}건</p>
               </div>
             </div>
 
@@ -478,8 +533,22 @@ export default function Home() {
                 ) : (
                   <div className="space-y-3">
                     {transactions.map((tx) => {
-                      const isTransfer = tx.note?.includes('[이동]') || tx.note?.includes('[샘플(이동)]')
+                      // 이동 감지: type이 '이동'이거나, note에 [이동] 또는 [샘플(이동)] 포함
+                      const isTransfer = tx.type === '이동' || tx.note?.includes('[이동]') || tx.note?.includes('[샘플(이동)]')
                       const displayType = isTransfer ? '이동' : tx.type
+
+                      // 이동인 경우 note에서 창고 정보 추출
+                      let transferInfo = ''
+                      if (isTransfer && tx.note) {
+                        const match = tx.note.match(/^(.+?) → (.+?)(?:\s*\(|$)/)
+                        if (match) {
+                          transferInfo = `${match[1]} → ${match[2]}`
+                        } else if (tx.note.includes('[이동]')) {
+                          transferInfo = tx.note.replace('[이동]', '').trim()
+                        } else {
+                          transferInfo = tx.note
+                        }
+                      }
 
                       return (
                       <div key={tx.id} className="flex items-center justify-between border-b pb-3">
@@ -496,15 +565,21 @@ export default function Home() {
                           <div>
                             <p className="font-medium text-sm">{tx.products?.product_name}</p>
                             <p className="text-xs text-gray-500">
-                              {tx.warehouses?.name} {tx.channel && `→ ${tx.channel}`}
+                              {isTransfer ? transferInfo : (
+                                <>{tx.warehouses?.name} {tx.channel && `→ ${tx.channel}`}</>
+                              )}
                             </p>
                           </div>
                         </div>
                         <div className="text-right">
                           <p className={`font-semibold text-sm ${
-                            tx.type === '입고' ? 'text-green-600' : 'text-red-600'
+                            isTransfer
+                              ? 'text-blue-600'
+                              : tx.type === '입고'
+                                ? 'text-green-600'
+                                : 'text-red-600'
                           }`}>
-                            {tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}개
+                            {isTransfer ? '↔' : tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}개
                           </p>
                           <p className="text-xs text-gray-500">
                             {new Date(tx.created_at).toLocaleDateString('ko-KR')}

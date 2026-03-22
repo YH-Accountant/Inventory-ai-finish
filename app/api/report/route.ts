@@ -1,24 +1,25 @@
 import { NextResponse } from 'next/server'
 import OpenAI from 'openai'
-import { createClient } from '@supabase/supabase-js'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
-// 서버 API에서는 service_role 키 사용 (RLS 우회)
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
-
-// 날짜를 YY.MM.DD 형식으로 변환
+// 날짜를 YY.MM.DD 형식으로 변환 (문자열 파싱, 타임존 이슈 방지)
 function formatDateShort(dateStr: string): string {
-  const date = new Date(dateStr)
-  const yy = String(date.getFullYear()).slice(2)
+  const parts = dateStr.split('-')
+  const yy = parts[0].slice(2)
+  const mm = parts[1]
+  const dd = parts[2]
+  return `${yy}.${mm}.${dd}`
+}
+
+// Date 객체를 로컬 YYYY-MM-DD 문자열로 변환 (toISOString은 UTC라서 사용하면 안됨)
+function toLocalDateStr(date: Date): string {
+  const yyyy = date.getFullYear()
   const mm = String(date.getMonth() + 1).padStart(2, '0')
   const dd = String(date.getDate()).padStart(2, '0')
-  return `${yy}.${mm}.${dd}`
+  return `${yyyy}-${mm}-${dd}`
 }
 
 // AI를 사용하여 비소모품(유통기한 불필요) 제품 분류
@@ -69,77 +70,92 @@ JSON 형식으로 응답: {"nonPerishable": ["제품명1", "제품명2"]}`
   return new Set()
 }
 
-export async function POST() {
+// 클라이언트에서 전달받는 데이터 타입
+interface ClientInventoryItem {
+  quantity: number
+  lot_number: string | null
+  product_name: string
+  product_code: string
+  product_group: string
+  shelf_life_months: number | null
+  warehouse_name: string
+}
+
+interface ClientTransaction {
+  type: string
+  quantity: number
+  channel: string | null
+  created_at: string
+  product_name: string
+}
+
+interface ClientExpiringLot {
+  productName: string
+  lotNumber: string
+  quantity: number
+  daysLeft: number
+  status: 'warning' | 'expired'
+  warehouseName: string
+}
+
+interface RequestBody {
+  inventory: ClientInventoryItem[]
+  transactions: ClientTransaction[]
+  warehouses: { name: string }[]
+  expiringLots: ClientExpiringLot[]
+}
+
+export async function POST(request: Request) {
   try {
     console.log('📊 [AI 리포트] 데이터 수집 시작...')
 
-    // 1. 재고 현황 조회
-    const { data: inventory } = await supabase
-      .from('inventory')
-      .select(`
-        quantity,
-        lot_number,
-        created_at,
-        products (product_name, product_code, product_group, shelf_life_months),
-        warehouses (name)
-      `)
+    // 클라이언트에서 전달받은 데이터 사용
+    const body: RequestBody = await request.json()
+    const { inventory, transactions, warehouses, expiringLots } = body
 
-    // 2. 현재 월의 시작일과 종료일 계산
+    console.log('📊 [DEBUG] 클라이언트 데이터 수신:')
+    console.log('  - inventory:', inventory?.length || 0, '개')
+    console.log('  - transactions:', transactions?.length || 0, '개')
+    console.log('  - warehouses:', warehouses?.length || 0, '개')
+    console.log('  - expiringLots:', expiringLots?.length || 0, '개')
+
+    // 현재 월의 시작일 계산
     const today = new Date()
     const currentYear = today.getFullYear()
     const currentMonth = today.getMonth()
     const monthStart = new Date(currentYear, currentMonth, 1)
-    const monthEnd = new Date(currentYear, currentMonth + 1, 0) // 이번 달 마지막 날
 
     // 월 표시용 문자열
     const monthLabel = `${currentYear}년 ${currentMonth + 1}월`
 
-    // 3. 현재 월의 입출고 기록
-    const { data: transactions } = await supabase
-      .from('transactions')
-      .select(`
-        type,
-        quantity,
-        channel,
-        created_at,
-        products (product_name)
-      `)
-      .gte('created_at', monthStart.toISOString())
-      .lte('created_at', today.toISOString())
+    // 이번 달 트랜잭션만 필터링
+    const monthTransactions = (transactions || []).filter(t => {
+      const txDate = new Date(t.created_at)
+      return txDate >= monthStart && txDate <= today
+    })
 
-    // 4. 창고 목록
-    const { data: warehouses } = await supabase
-      .from('warehouses')
-      .select('name')
+    console.log('📊 [DEBUG] 이번 달 트랜잭션:', monthTransactions.length, '개')
 
     // 데이터 요약 생성
-    const inventorySummary = inventory?.map(i => ({
-      제품: (i.products as { product_name: string })?.product_name,
-      창고: (i.warehouses as { name: string })?.name,
+    const inventorySummary = (inventory || []).map(i => ({
+      제품: i.product_name,
+      창고: i.warehouse_name,
       수량: i.quantity,
       로트: i.lot_number
-    })) || []
-
-    const transactionSummary = transactions?.map(t => ({
-      유형: t.type,
-      제품: (t.products as { product_name: string })?.product_name,
-      수량: t.quantity,
-      채널: t.channel,
-      날짜: t.created_at
-    })) || []
+    }))
 
     // 총 재고 계산
-    const totalStock = inventory?.reduce((sum, i) => sum + i.quantity, 0) || 0
+    const totalStock = (inventory || []).reduce((sum, i) => sum + i.quantity, 0)
 
     // 창고별 재고 계산
     const stockByWarehouse: Record<string, number> = {}
-    inventory?.forEach(i => {
-      const wName = (i.warehouses as { name: string })?.name || '미지정'
+    ;(inventory || []).forEach(i => {
+      const wName = i.warehouse_name || '미지정'
       stockByWarehouse[wName] = (stockByWarehouse[wName] || 0) + i.quantity
     })
 
-    // 출고 통계
-    const outbound = transactions?.filter(t => t.type === '출고') || []
+    // 출고 통계 (이번 달)
+    const outbound = monthTransactions.filter(t => t.type === '출고')
     const totalOutbound = outbound.reduce((sum, t) => sum + t.quantity, 0)
 
     // 채널별 출고
@@ -149,23 +165,23 @@ export async function POST() {
       outboundByChannel[ch] = (outboundByChannel[ch] || 0) + t.quantity
     })
 
-    // 날짜별 출고 체크 (출고 없는 날 감지)
+    // 날짜별 출고 체크 (출고 없는 날 감지) - 로컬 타임존 기준
     const outboundByDate: Record<string, number> = {}
     outbound.forEach(t => {
-      const date = t.created_at.split('T')[0]
+      const txDate = new Date(t.created_at)
+      const date = toLocalDateStr(txDate)
       outboundByDate[date] = (outboundByDate[date] || 0) + t.quantity
     })
 
-    // 현재 월 1일부터 오늘까지 출고 없는 날 계산
+    // 현재 월 1일부터 오늘까지 출고 없는 날 계산 (주말 제외)
     const noOutboundDays: string[] = []
     const checkDate = new Date(monthStart)
 
-    // 월 1일부터 오늘까지 순회
     while (checkDate <= today) {
-      const dateStr = checkDate.toISOString().split('T')[0]
+      const dateStr = toLocalDateStr(checkDate)
       const dayOfWeek = checkDate.getDay()
 
-      // 주말(토,일) 제외
+      // 주말(토=6, 일=0) 제외
       if (dayOfWeek !== 0 && dayOfWeek !== 6) {
         if (!outboundByDate[dateStr]) {
           noOutboundDays.push(formatDateShort(dateStr))
@@ -174,85 +190,74 @@ export async function POST() {
       checkDate.setDate(checkDate.getDate() + 1)
     }
 
-    // 유통기한 임박/만료 상품 분석 (lots 페이지와 동일한 기준: 25% 이하일 때 임박)
-    const expiringProducts: { name: string; lot: string; qty: number; daysLeft: number; status: string }[] = []
+    console.log('📊 [DEBUG] 출고 없는 평일:', noOutboundDays)
 
-    console.log('📊 [DEBUG] 재고 항목 수:', inventory?.length || 0)
+    // 유통기한 임박/만료 상품 (클라이언트에서 이미 계산된 데이터 사용)
+    const expiringProducts = (expiringLots || []).map(lot => ({
+      name: lot.productName,
+      lot: lot.lotNumber,
+      qty: lot.quantity,
+      daysLeft: lot.daysLeft,
+      status: lot.status === 'expired' ? '만료' : '임박',
+      warehouse: lot.warehouseName
+    }))
 
-    // AI로 비소모품 분류 (한 번만 호출)
-    const uniqueProductNames = [...new Set(
-      inventory?.map(item => (item.products as { product_name: string })?.product_name).filter(Boolean) || []
-    )]
-    const nonPerishableSet = await classifyPerishableProducts(uniqueProductNames)
+    // 만약 expiringLots가 없으면 inventory에서 직접 계산
+    if (expiringProducts.length === 0 && inventory && inventory.length > 0) {
+      console.log('📊 [DEBUG] expiringLots가 없어서 직접 계산...')
 
-    inventory?.forEach(item => {
-      const lotNumber = item.lot_number
-      if (!lotNumber || lotNumber.length < 6) {
-        console.log('📊 [DEBUG] 로트번호 스킵:', lotNumber, '(길이 부족)')
-        return
-      }
+      // AI로 비소모품 분류
+      const uniqueProductNames = [...new Set(inventory.map(i => i.product_name).filter(Boolean))]
+      const nonPerishableSet = await classifyPerishableProducts(uniqueProductNames)
 
-      const productName = (item.products as { product_name: string })?.product_name || '알수없음'
+      inventory.forEach(item => {
+        const lotNumber = item.lot_number
+        if (!lotNumber || lotNumber.length < 6) return
 
-      // AI가 분류한 비소모품은 유통기한 체크 안함
-      if (nonPerishableSet.has(productName)) {
-        console.log('📊 [DEBUG] 비소모품 스킵 (AI 분류):', productName)
-        return
-      }
+        // AI가 분류한 비소모품은 스킵
+        if (nonPerishableSet.has(item.product_name)) return
 
-      // 로트번호에서 제조일 추출 (YYMMDD)
-      const yy = parseInt(lotNumber.substring(0, 2))
-      const mm = parseInt(lotNumber.substring(2, 4)) - 1
-      const dd = parseInt(lotNumber.substring(4, 6))
-      if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return
+        // 로트번호에서 제조일 추출 (YYMMDD)
+        const yy = parseInt(lotNumber.substring(0, 2))
+        const mm = parseInt(lotNumber.substring(2, 4)) - 1
+        const dd = parseInt(lotNumber.substring(4, 6))
+        if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return
 
-      const mfgDate = new Date(2000 + yy, mm, dd)
-      // 제품별 유통기한 사용 (없으면 기본 24개월)
-      const shelfLifeMonths = (item.products as { shelf_life_months: number | null })?.shelf_life_months || 24
-      const expiryDate = new Date(mfgDate)
-      expiryDate.setMonth(expiryDate.getMonth() + shelfLifeMonths)
+        const mfgDate = new Date(2000 + yy, mm, dd)
+        const shelfLifeMonths = item.shelf_life_months || 24
+        const expiryDate = new Date(mfgDate)
+        expiryDate.setMonth(expiryDate.getMonth() + shelfLifeMonths)
 
-      const daysLeft = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+        const daysLeft = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+        const totalDays = shelfLifeMonths * 30
+        const warningThresholdDays = totalDays * 0.25
 
-      // lots 페이지와 동일: 유통기한 25% 이하일 때 임박
-      const totalDays = shelfLifeMonths * 30
-      const warningThresholdDays = totalDays * 0.25
-
-      console.log('📊 [DEBUG] 로트분석:', {
-        lot: lotNumber,
-        product: productName,
-        daysLeft,
-        threshold: warningThresholdDays,
-        isExpired: daysLeft <= 0,
-        isWarning: daysLeft > 0 && daysLeft <= warningThresholdDays
+        if (daysLeft <= 0) {
+          expiringProducts.push({
+            name: item.product_name,
+            lot: lotNumber,
+            qty: item.quantity,
+            daysLeft,
+            status: '만료',
+            warehouse: item.warehouse_name
+          })
+        } else if (daysLeft <= warningThresholdDays) {
+          expiringProducts.push({
+            name: item.product_name,
+            lot: lotNumber,
+            qty: item.quantity,
+            daysLeft,
+            status: '임박',
+            warehouse: item.warehouse_name
+          })
+        }
       })
 
-      if (daysLeft <= 0) {
-        expiringProducts.push({
-          name: productName,
-          lot: lotNumber,
-          qty: item.quantity,
-          daysLeft,
-          status: '만료'
-        })
-      } else if (daysLeft <= warningThresholdDays) {
-        expiringProducts.push({
-          name: productName,
-          lot: lotNumber,
-          qty: item.quantity,
-          daysLeft,
-          status: '임박'
-        })
-      }
-    })
-
-    // 임박/만료 정렬
-    expiringProducts.sort((a, b) => a.daysLeft - b.daysLeft)
-
-    console.log('📊 [DEBUG] 최종 임박/만료 상품 수:', expiringProducts.length)
-    if (expiringProducts.length > 0) {
-      console.log('📊 [DEBUG] 임박/만료 목록:', expiringProducts)
+      // 정렬
+      expiringProducts.sort((a, b) => a.daysLeft - b.daysLeft)
     }
+
+    console.log('📊 [DEBUG] 임박/만료 상품:', expiringProducts.length, '개')
 
     console.log('📊 [AI 리포트] 데이터 수집 완료, AI 분석 시작...')
 
@@ -267,17 +272,17 @@ export async function POST() {
 ### 재고 상세 (상위 10개)
 ${inventorySummary.slice(0, 10).map(i => `- ${i.제품}: ${i.창고} ${i.수량}개`).join('\n') || '데이터 없음'}
 
-### 출고 현황
+### 출고 현황 (${monthLabel})
 - 총 출고: ${totalOutbound.toLocaleString()}개
 - 채널별: ${Object.entries(outboundByChannel).map(([k, v]) => `${k}: ${v.toLocaleString()}개`).join(', ') || '데이터 없음'}
 
-### 출고 없는 날 (${monthLabel}, 평일 기준)
+### 출고 없는 날 (${monthLabel}, 평일 기준 - 주말 제외)
 - 출고 없는 날짜: ${noOutboundDays.length > 0 ? noOutboundDays.join(', ') : '없음'}
 - 출고 없는 날 수: ${noOutboundDays.length}일
 
 ### 유통기한 임박/만료 상품
 ${expiringProducts.length > 0 ? expiringProducts.slice(0, 10).map(p =>
-  `- [${p.status}] ${p.name} (LOT: ${p.lot}) ${p.qty}개 - ${p.daysLeft <= 0 ? '이미 만료됨' : `${p.daysLeft}일 남음`}`
+  `- [${p.status}] ${p.name} (LOT: ${p.lot}, ${p.warehouse}) ${p.qty}개 - ${p.daysLeft <= 0 ? '이미 만료됨' : `${p.daysLeft}일 남음`}`
 ).join('\n') : '없음'}
 
 ## 리포트 형식 (마크다운) - 추천액션 섹션 없이, 각 섹션에 권고사항 포함
@@ -286,7 +291,7 @@ ${expiringProducts.length > 0 ? expiringProducts.slice(0, 10).map(p =>
 (2-3줄로 핵심 현황)
 
 ### 출고 이상 감지
-- ${monthLabel} 출고 기록을 분석했습니다.
+- ${monthLabel} 출고 기록을 분석했습니다. (주말 제외)
 - 출고 없는 날이 있으면: 해당 날짜를 모두 나열하고 (예: ${noOutboundDays.slice(0, 3).join(', ')} 등)
 - 바로 아래에 "→ 권고: 출고 기록 누락 여부 확인 필요" 형태로 권고사항 작성
 - 출고 없는 날이 없으면: "정상 - 모든 평일에 출고 기록이 있습니다."
@@ -320,9 +325,10 @@ ${expiringProducts.length > 0 ? expiringProducts.slice(0, 10).map(p =>
         totalOutbound,
         outboundByChannel,
         warehouseCount: warehouses?.length || 0,
-        productCount: new Set(inventory?.map(i => (i.products as { product_name: string })?.product_name)).size,
+        productCount: new Set(inventory?.map(i => i.product_name)).size,
         monthLabel,
-        noOutboundDaysCount: noOutboundDays.length
+        noOutboundDaysCount: noOutboundDays.length,
+        expiringCount: expiringProducts.length
       }
     })
   } catch (error) {

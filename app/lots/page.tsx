@@ -27,7 +27,6 @@ interface InventoryItem {
 }
 
 interface LotGroup {
-  product: Product
   lot_number: string | null
   manufacture_date: Date | null
   expiry_date: Date | null
@@ -38,6 +37,14 @@ interface LotGroup {
     quantity: number
   }[]
   totalQuantity: number
+}
+
+// 제품 단위로 묶는 상위 그룹
+interface ProductGroup {
+  product: Product
+  lots: LotGroup[]
+  totalQuantity: number
+  worstStatus: LotGroup['status'] // 가장 위험한 상태
 }
 
 // 로트번호에서 제조일자 추출 (YYMMDD-NN → Date)
@@ -76,14 +83,40 @@ async function classifyNonPerishableProducts(productNames: string[]): Promise<Se
   return new Set()
 }
 
+// 상태 우선순위 (숫자가 낮을수록 위험)
+const STATUS_ORDER = { expired: 0, warning: 1, normal: 2, unknown: 3 } as const
+
+function getWorstStatus(lots: LotGroup[]): LotGroup['status'] {
+  let worst: LotGroup['status'] = 'unknown'
+  for (const lot of lots) {
+    if (STATUS_ORDER[lot.status] < STATUS_ORDER[worst]) {
+      worst = lot.status
+    }
+  }
+  return worst
+}
+
 export default function LotsPage() {
-  const [lots, setLots] = useState<LotGroup[]>([])
+  const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'warning' | 'expired'>('all')
+  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     fetchData()
   }, [])
+
+  function toggleProduct(productId: string) {
+    setExpandedProducts(prev => {
+      const next = new Set(prev)
+      if (next.has(productId)) {
+        next.delete(productId)
+      } else {
+        next.add(productId)
+      }
+      return next
+    })
+  }
 
   async function fetchData() {
     setLoading(true)
@@ -97,7 +130,7 @@ export default function LotsPage() {
       `)
 
     if (!inventoryData) {
-      setLots([])
+      setProductGroups([])
       setLoading(false)
       return
     }
@@ -108,13 +141,13 @@ export default function LotsPage() {
     )] as string[]
     const nonPerishableSet = await classifyNonPerishableProducts(uniqueProductNames)
 
-    // 제품 + 로트번호로 그룹화
-    const groupMap = new Map<string, LotGroup>()
+    // 1단계: 제품+로트번호로 로트 그룹 생성
+    const lotMap = new Map<string, LotGroup & { product: Product }>()
 
     inventoryData.forEach((item: InventoryItem) => {
       const key = `${item.product_id}_${item.lot_number || 'none'}`
 
-      if (!groupMap.has(key)) {
+      if (!lotMap.has(key)) {
         const shelfLifeMonths = item.products?.shelf_life_months || 24
         let expiryDate: Date | null = null
         let status: LotGroup['status'] = 'unknown'
@@ -122,7 +155,6 @@ export default function LotsPage() {
 
         const mfgDate = parseLotNumber(item.lot_number)
 
-        // AI가 분류한 비소모품은 유통기한 계산 안함
         const productName = item.products?.product_name || ''
         const isNonPerishableProduct = nonPerishableSet.has(productName)
 
@@ -131,11 +163,10 @@ export default function LotsPage() {
           expiryDate.setMonth(expiryDate.getMonth() + shelfLifeMonths)
 
           const today = new Date()
-          const totalDays = shelfLifeMonths * 30 // 대략적인 총 일수
+          const totalDays = shelfLifeMonths * 30
           const remainingMs = expiryDate.getTime() - today.getTime()
           daysRemaining = Math.ceil(remainingMs / (1000 * 60 * 60 * 24))
 
-          // 25% 임계값 계산
           const warningThresholdDays = totalDays * 0.25
 
           if (daysRemaining <= 0) {
@@ -147,7 +178,7 @@ export default function LotsPage() {
           }
         }
 
-        groupMap.set(key, {
+        lotMap.set(key, {
           product: item.products,
           lot_number: item.lot_number,
           manufacture_date: mfgDate,
@@ -159,7 +190,7 @@ export default function LotsPage() {
         })
       }
 
-      const group = groupMap.get(key)!
+      const group = lotMap.get(key)!
       group.items.push({
         warehouse: item.warehouses,
         quantity: item.quantity
@@ -167,50 +198,116 @@ export default function LotsPage() {
       group.totalQuantity += item.quantity
     })
 
-    // 배열로 변환 후 정렬 (임박/만료 순으로)
-    let sortedLots = Array.from(groupMap.values()).sort((a, b) => {
-      // 만료 > 임박 > 정상 > 미지정 순
-      const statusOrder = { expired: 0, warning: 1, normal: 2, unknown: 3 }
-      if (statusOrder[a.status] !== statusOrder[b.status]) {
-        return statusOrder[a.status] - statusOrder[b.status]
+    // 2단계: 제품 단위로 상위 그룹 생성
+    const productMap = new Map<string, ProductGroup>()
+
+    lotMap.forEach((lotWithProduct) => {
+      const productId = lotWithProduct.product?.id
+      if (!productId) return
+
+      if (!productMap.has(productId)) {
+        productMap.set(productId, {
+          product: lotWithProduct.product,
+          lots: [],
+          totalQuantity: 0,
+          worstStatus: 'unknown'
+        })
       }
-      // 같은 상태면 남은 일수 오름차순
-      if (a.daysRemaining !== null && b.daysRemaining !== null) {
-        return a.daysRemaining - b.daysRemaining
-      }
-      return 0
+
+      const productGroup = productMap.get(productId)!
+      const { product: _product, ...lotOnly } = lotWithProduct
+      productGroup.lots.push(lotOnly)
+      productGroup.totalQuantity += lotOnly.totalQuantity
     })
 
-    setLots(sortedLots)
+    // 각 제품 그룹 내 로트 정렬 (만료→임박→정상→미지정, 같은 상태면 남은 일수 오름차순)
+    productMap.forEach((group) => {
+      group.lots.sort((a, b) => {
+        if (STATUS_ORDER[a.status] !== STATUS_ORDER[b.status]) {
+          return STATUS_ORDER[a.status] - STATUS_ORDER[b.status]
+        }
+        if (a.daysRemaining !== null && b.daysRemaining !== null) {
+          return a.daysRemaining - b.daysRemaining
+        }
+        return 0
+      })
+      group.worstStatus = getWorstStatus(group.lots)
+    })
+
+    // 제품 그룹 정렬 (위험한 제품이 위로)
+    const sorted = Array.from(productMap.values()).sort((a, b) => {
+      if (STATUS_ORDER[a.worstStatus] !== STATUS_ORDER[b.worstStatus]) {
+        return STATUS_ORDER[a.worstStatus] - STATUS_ORDER[b.worstStatus]
+      }
+      return a.product.product_name.localeCompare(b.product.product_name)
+    })
+
+    setProductGroups(sorted)
+
+    // 임박/만료 로트가 있는 제품은 기본 펼침
+    const autoExpand = new Set<string>()
+    sorted.forEach((group) => {
+      if (group.worstStatus === 'expired' || group.worstStatus === 'warning') {
+        autoExpand.add(group.product.id)
+      }
+    })
+    setExpandedProducts(autoExpand)
+
     setLoading(false)
   }
 
-  const filteredLots = lots.filter(lot => {
-    if (filter === 'all') return true
-    if (filter === 'warning') return lot.status === 'warning' || lot.status === 'expired'
-    if (filter === 'expired') return lot.status === 'expired'
-    return true
-  })
+  // 전체 로트 수 계산
+  const totalLotCount = productGroups.reduce((sum, g) => sum + g.lots.length, 0)
+  const warningCount = productGroups.reduce(
+    (sum, g) => sum + g.lots.filter(l => l.status === 'warning').length, 0
+  )
+  const expiredCount = productGroups.reduce(
+    (sum, g) => sum + g.lots.filter(l => l.status === 'expired').length, 0
+  )
 
-  const warningCount = lots.filter(l => l.status === 'warning').length
-  const expiredCount = lots.filter(l => l.status === 'expired').length
+  // 필터 적용: 해당 로트가 있는 제품만 표시
+  const filteredGroups = productGroups
+    .map(group => {
+      if (filter === 'all') return group
+      const filteredLots = group.lots.filter(lot => {
+        if (filter === 'warning') return lot.status === 'warning' || lot.status === 'expired'
+        if (filter === 'expired') return lot.status === 'expired'
+        return true
+      })
+      if (filteredLots.length === 0) return null
+      return { ...group, lots: filteredLots }
+    })
+    .filter((g): g is ProductGroup => g !== null)
 
   function getStatusBadge(status: LotGroup['status']) {
     switch (status) {
       case 'expired':
-        return <span className="px-2 py-1 bg-red-100 text-red-700 text-xs font-medium rounded-full">만료</span>
+        return <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs font-medium rounded-full">만료</span>
       case 'warning':
-        return <span className="px-2 py-1 bg-yellow-100 text-yellow-700 text-xs font-medium rounded-full">임박</span>
+        return <span className="px-2 py-0.5 bg-yellow-100 text-yellow-700 text-xs font-medium rounded-full">임박</span>
       case 'normal':
-        return <span className="px-2 py-1 bg-green-100 text-green-700 text-xs font-medium rounded-full">정상</span>
+        return <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">정상</span>
       default:
-        return <span className="px-2 py-1 bg-gray-100 text-gray-500 text-xs font-medium rounded-full">미지정</span>
+        return <span className="px-2 py-0.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-full">미지정</span>
     }
   }
 
-  function formatDate(dateStr: string | null) {
-    if (!dateStr) return '-'
-    return new Date(dateStr).toLocaleDateString('ko-KR')
+  function getProductStatusIndicator(status: LotGroup['status']) {
+    switch (status) {
+      case 'expired':
+        return <span className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0" />
+      case 'warning':
+        return <span className="w-2.5 h-2.5 rounded-full bg-yellow-500 flex-shrink-0" />
+      case 'normal':
+        return <span className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" />
+      default:
+        return <span className="w-2.5 h-2.5 rounded-full bg-gray-400 flex-shrink-0" />
+    }
+  }
+
+  function formatDate(date: Date | null) {
+    if (!date) return '-'
+    return date.toLocaleDateString('ko-KR')
   }
 
   function formatDaysRemaining(days: number | null) {
@@ -238,14 +335,18 @@ export default function LotsPage() {
             ← 대시보드로
           </Link>
           <h1 className="text-3xl font-bold text-gray-900">로트 관리</h1>
-          <p className="text-gray-600 mt-1">제조일자별 재고 현황 및 유통기한 관리</p>
+          <p className="text-gray-600 mt-1">제품별 로트 현황 및 유통기한 관리</p>
         </div>
 
         {/* 요약 카드 */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+          <div className="bg-white rounded-lg shadow p-6">
+            <h3 className="text-sm font-medium text-gray-500">제품 수</h3>
+            <p className="text-3xl font-bold text-gray-900 mt-2">{productGroups.length}개</p>
+          </div>
           <div className="bg-white rounded-lg shadow p-6">
             <h3 className="text-sm font-medium text-gray-500">총 로트 수</h3>
-            <p className="text-3xl font-bold text-gray-900 mt-2">{lots.length}개</p>
+            <p className="text-3xl font-bold text-gray-900 mt-2">{totalLotCount}개</p>
           </div>
           <div
             className={`bg-white rounded-lg shadow p-6 cursor-pointer transition hover:ring-2 hover:ring-yellow-400 ${
@@ -279,7 +380,7 @@ export default function LotsPage() {
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >
-              전체 ({lots.length})
+              전체 ({totalLotCount})
             </button>
             <button
               onClick={() => setFilter('warning')}
@@ -304,89 +405,114 @@ export default function LotsPage() {
           </div>
         </div>
 
-        {/* 로트 목록 */}
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-6 border-b">
-            <h2 className="text-xl font-semibold">
-              로트 현황 ({filteredLots.length}건)
-            </h2>
-          </div>
-          <div className="p-6">
-            {filteredLots.length === 0 ? (
-              <p className="text-gray-500 text-center py-8">
+        {/* 제품별 로트 목록 */}
+        <div className="space-y-3">
+          {filteredGroups.length === 0 ? (
+            <div className="bg-white rounded-lg shadow p-8">
+              <p className="text-gray-500 text-center">
                 {filter === 'all'
                   ? '등록된 재고가 없습니다.'
                   : '해당하는 로트가 없습니다.'}
               </p>
-            ) : (
-              <div className="space-y-4">
-                {filteredLots.map((lot, idx) => (
-                  <div
-                    key={`${lot.product?.id}_${lot.lot_number}_${idx}`}
-                    className={`border rounded-lg p-4 transition ${
-                      lot.status === 'expired'
-                        ? 'border-red-200 bg-red-50'
-                        : lot.status === 'warning'
-                        ? 'border-yellow-200 bg-yellow-50'
-                        : 'hover:shadow-md'
-                    }`}
+            </div>
+          ) : (
+            filteredGroups.map((group) => {
+              const isExpanded = expandedProducts.has(group.product.id)
+
+              return (
+                <div key={group.product.id} className="bg-white rounded-lg shadow overflow-hidden">
+                  {/* 제품 헤더 (클릭으로 펼침/접힘) */}
+                  <button
+                    onClick={() => toggleProduct(group.product.id)}
+                    className="w-full px-5 py-4 flex items-center justify-between hover:bg-gray-50 transition"
                   >
-                    {/* 제품 정보 */}
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="flex items-center gap-3">
-                        {getStatusBadge(lot.status)}
-                        <div>
-                          <h3 className="font-semibold text-gray-900">
-                            {lot.product?.product_name}
-                          </h3>
-                          <p className="text-sm text-gray-500">{lot.product?.product_code}</p>
-                        </div>
+                    <div className="flex items-center gap-3">
+                      {getProductStatusIndicator(group.worstStatus)}
+                      <span className={`text-sm transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}>
+                        ▶
+                      </span>
+                      <div className="text-left">
+                        <h3 className="font-semibold text-gray-900">
+                          {group.product.product_name}
+                        </h3>
+                        <p className="text-sm text-gray-500">{group.product.product_code}</p>
                       </div>
-                      <span className="text-lg font-bold text-blue-600">
-                        {lot.totalQuantity.toLocaleString()}개
+                      <span className="text-xs text-gray-400 ml-2">
+                        {group.lots.length}개 로트
                       </span>
                     </div>
+                    <span className="text-lg font-bold text-blue-600">
+                      {group.totalQuantity.toLocaleString()}개
+                    </span>
+                  </button>
 
-                    {/* 로트 정보 */}
-                    <div className="grid grid-cols-3 gap-4 mb-3 text-sm">
-                      <div>
-                        <span className="text-gray-500">로트번호:</span>
-                        <span className="ml-2 font-medium font-mono">{lot.lot_number || '-'}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">유통기한:</span>
-                        <span className="ml-2 font-medium">
-                          {lot.expiry_date ? formatDate(lot.expiry_date.toISOString()) : '-'}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">남은 기간:</span>
-                        <span className={`ml-2 font-medium ${
-                          lot.status === 'expired' ? 'text-red-600' :
-                          lot.status === 'warning' ? 'text-yellow-600' : ''
-                        }`}>
-                          {formatDaysRemaining(lot.daysRemaining)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* 창고별 수량 */}
-                    <div className="flex gap-2 flex-wrap">
-                      {lot.items.map((item, itemIdx) => (
+                  {/* 하위 로트 목록 */}
+                  {isExpanded && (
+                    <div className="border-t bg-gray-50">
+                      {group.lots.map((lot, idx) => (
                         <div
-                          key={itemIdx}
-                          className="bg-white border rounded px-3 py-1.5 text-sm"
+                          key={`${lot.lot_number || 'none'}_${idx}`}
+                          className={`px-5 py-3 border-b last:border-b-0 ${
+                            lot.status === 'expired'
+                              ? 'bg-red-50'
+                              : lot.status === 'warning'
+                              ? 'bg-yellow-50'
+                              : 'bg-white'
+                          }`}
                         >
-                          <span className="text-gray-500">{item.warehouse?.name}</span>
-                          <span className="ml-2 font-medium">{item.quantity.toLocaleString()}개</span>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-3">
+                              <span className="text-gray-300 text-sm">├</span>
+                              {getStatusBadge(lot.status)}
+                              <span className="font-mono font-medium text-sm text-gray-800">
+                                {lot.lot_number || '(로트 미지정)'}
+                              </span>
+                            </div>
+                            <span className="font-semibold text-sm text-gray-700">
+                              {lot.totalQuantity.toLocaleString()}개
+                            </span>
+                          </div>
+
+                          <div className="ml-8 flex items-center gap-6 text-xs text-gray-500">
+                            <div>
+                              <span>제조일:</span>
+                              <span className="ml-1 text-gray-700">{formatDate(lot.manufacture_date)}</span>
+                            </div>
+                            <div>
+                              <span>유통기한:</span>
+                              <span className="ml-1 text-gray-700">{formatDate(lot.expiry_date)}</span>
+                            </div>
+                            <div>
+                              <span>남은 기간:</span>
+                              <span className={`ml-1 font-medium ${
+                                lot.status === 'expired' ? 'text-red-600' :
+                                lot.status === 'warning' ? 'text-yellow-600' : 'text-gray-700'
+                              }`}>
+                                {formatDaysRemaining(lot.daysRemaining)}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* 창고별 수량 */}
+                          <div className="ml-8 mt-2 flex gap-2 flex-wrap">
+                            {lot.items.map((item, itemIdx) => (
+                              <div
+                                key={itemIdx}
+                                className="bg-white border rounded px-2.5 py-1 text-xs"
+                              >
+                                <span className="text-gray-500">{item.warehouse?.name}</span>
+                                <span className="ml-1.5 font-medium text-gray-700">{item.quantity.toLocaleString()}개</span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       ))}
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+                  )}
+                </div>
+              )
+            })
+          )}
         </div>
       </div>
     </div>

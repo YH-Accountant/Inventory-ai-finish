@@ -34,6 +34,8 @@ interface Message {
     warehouse?: string
     to_warehouse?: string  // 창고 이동 시 목적지
     channel?: string
+    date?: string  // YYYY-MM-DD 형식
+    lot_number?: string  // 입고 시 로트번호 (YYMMDD-01)
     note?: string
   }
 }
@@ -47,13 +49,14 @@ export default function ChatWidget() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: '안녕하세요! 재고관리 AI입니다.\n\n예시:\n- "쿠션A 500개 올리브영 출고"\n- "핸드크림 1000개 입고"\n- "쿠션 재고 얼마야?"'
+      content: '안녕하세요! 재고관리 AI입니다.\n\n예시: "쿠션A 500개 올리브영 출고"\n           입고(생산)/출고/(내부)이동'
     }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [pendingAction, setPendingAction] = useState<Message['data'] | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     fetchData()
@@ -62,6 +65,13 @@ export default function ChatWidget() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // 채팅창 열릴 때 입력란 자동 포커스
+  useEffect(() => {
+    if (isOpen) {
+      setTimeout(() => inputRef.current?.focus(), 100)
+    }
+  }, [isOpen])
 
   async function fetchData() {
     const { data: productsData } = await supabase
@@ -122,20 +132,34 @@ export default function ChatWidget() {
 
       // 새 로직: AI가 스스로 추론하여 필요한 것만 질문
       if (data.action === '입고' || data.action === '출고' || data.action === '창고이동') {
-        // 모든 정보가 확정된 경우 - 확인 버튼 표시
-        setPendingAction({
-          action: data.action,
-          product_name: data.product_name,
-          quantity: data.quantity,
-          warehouse: data.warehouse,
-          to_warehouse: data.to_warehouse,
-          channel: data.channel
-        })
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: data.message + '\n\n진행할까요?',
-          data
-        }])
+        // 필수 정보가 모두 있는지 검증
+        const hasRequiredFields = data.product_name && data.quantity && data.warehouse
+          && (data.action !== '창고이동' || data.to_warehouse)
+
+        if (hasRequiredFields) {
+          // 모든 정보가 확정된 경우 - 확인 버튼 표시
+          setPendingAction({
+            action: data.action,
+            product_name: data.product_name,
+            quantity: data.quantity,
+            warehouse: data.warehouse,
+            to_warehouse: data.to_warehouse,
+            channel: data.channel,
+            date: data.date,
+            lot_number: data.lot_number
+          })
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: data.message + '\n\n진행할까요?',
+            data
+          }])
+        } else {
+          // 필수 정보 부족 - 질문으로 처리 (텍스트 입력 가능)
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: data.message
+          }])
+        }
       } else if (data.action === '질문') {
         // AI가 추가 정보 필요 - 질문만 표시
         setMessages(prev => [...prev, {
@@ -159,6 +183,8 @@ export default function ChatWidget() {
       }])
     } finally {
       setLoading(false)
+      // 입력란에 자동 포커스 유지
+      setTimeout(() => inputRef.current?.focus(), 100)
     }
   }
 
@@ -218,6 +244,15 @@ export default function ChatWidget() {
         ? `[${pendingAction.channel}] AI 채팅으로 등록`
         : 'AI 채팅으로 등록'
 
+      // 입고용 로트번호: AI가 준 것 또는 오늘 날짜 자동 생성
+      const lotNumber = pendingAction.lot_number || (() => {
+        const today = new Date()
+        const yy = today.getFullYear().toString().slice(-2)
+        const mm = (today.getMonth() + 1).toString().padStart(2, '0')
+        const dd = today.getDate().toString().padStart(2, '0')
+        return `${yy}${mm}${dd}-01`
+      })()
+
       // 창고 이동인 경우
       const isTransfer = pendingAction.action === '창고이동' && pendingAction.to_warehouse
 
@@ -232,26 +267,39 @@ export default function ChatWidget() {
           return
         }
 
-        // 1. 출고 트랜잭션 (from 창고)
+        // 이동 시 출발 창고 재고 부족 체크
+        const { data: fromInvCheck } = await supabase
+          .from('inventory')
+          .select('quantity')
+          .eq('product_id', product.id)
+          .eq('warehouse_id', warehouse.id)
+          .gt('quantity', 0)
+
+        const fromTotal = (fromInvCheck || []).reduce((sum, inv) => sum + inv.quantity, 0)
+        if (fromTotal < (pendingAction.quantity || 0)) {
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: `재고 부족!\n\n${warehouse.name} 가용 재고: ${fromTotal.toLocaleString()}개\n요청: ${pendingAction.quantity?.toLocaleString()}개`
+          }])
+          setPendingAction(null)
+          return
+        }
+
+        // 날짜 처리: 지정된 날짜가 있으면 사용, 없으면 현재 시간
+        const transactionDate = pendingAction.date
+          ? new Date(pendingAction.date + 'T09:00:00').toISOString()
+          : new Date().toISOString()
+
+        // 이동 트랜잭션 (단일 레코드)
         await supabase.from('transactions').insert([{
           product_id: product.id,
           warehouse_id: warehouse.id,
-          type: '출고',
+          type: '이동',
           quantity: pendingAction.quantity,
           channel: null,
-          note: `${noteText} → ${toWarehouse.name}`,
-          recorded_by: profile?.name || 'AI'
-        }])
-
-        // 2. 입고 트랜잭션 (to 창고)
-        await supabase.from('transactions').insert([{
-          product_id: product.id,
-          warehouse_id: toWarehouse.id,
-          type: '입고',
-          quantity: pendingAction.quantity,
-          channel: null,
-          note: `${noteText} ← ${warehouse.name}`,
-          recorded_by: profile?.name || 'AI'
+          note: `${warehouse.name} → ${toWarehouse.name}`,
+          recorded_by: profile?.name || 'AI',
+          created_at: transactionDate
         }])
 
         // 3. from 창고 재고 감소
@@ -293,7 +341,33 @@ export default function ChatWidget() {
           content: `이동 완료!\n${product.product_name} ${pendingAction.quantity?.toLocaleString()}개\n${warehouse.name} → ${toWarehouse.name}`
         }])
       } else {
-        // 일반 입고/출고
+        // 날짜 처리: 지정된 날짜가 있으면 사용, 없으면 현재 시간
+        const transactionDate = pendingAction.date
+          ? new Date(pendingAction.date + 'T09:00:00').toISOString()
+          : new Date().toISOString()
+
+        // 출고인 경우: 재고 부족 체크 먼저
+        if (pendingAction.action === '출고') {
+          const { data: inventoryLots } = await supabase
+            .from('inventory')
+            .select('id, quantity')
+            .eq('product_id', product.id)
+            .eq('warehouse_id', warehouse.id)
+            .gt('quantity', 0)
+            .order('lot_number', { ascending: true })
+
+          const totalAvailable = (inventoryLots || []).reduce((sum, lot) => sum + lot.quantity, 0)
+          if (totalAvailable < (pendingAction.quantity || 0)) {
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: `재고 부족!\n\n요청: ${pendingAction.quantity?.toLocaleString()}개\n가용 재고: ${totalAvailable.toLocaleString()}개`
+            }])
+            setPendingAction(null)
+            return
+          }
+        }
+
+        // 입출고 기록 저장
         await supabase.from('transactions').insert([{
           product_id: product.id,
           warehouse_id: warehouse.id,
@@ -301,33 +375,92 @@ export default function ChatWidget() {
           quantity: pendingAction.quantity,
           channel: pendingAction.channel || null,
           note: noteText,
-          recorded_by: profile?.name || 'AI'
+          recorded_by: profile?.name || 'AI',
+          created_at: transactionDate
         }])
 
-        const { data: existingInv } = await supabase
-          .from('inventory')
-          .select('id, quantity')
-          .eq('product_id', product.id)
-          .eq('warehouse_id', warehouse.id)
-          .single()
+        // 재고 업데이트
+        if (pendingAction.action === '입고') {
+          // 입고: 제품+창고+로트번호 기준으로 조회
+          const { data: existingInv } = await supabase
+            .from('inventory')
+            .select('id, quantity')
+            .eq('product_id', product.id)
+            .eq('warehouse_id', warehouse.id)
+            .eq('lot_number', lotNumber)
+            .single()
 
-        if (existingInv) {
-          const newQty = pendingAction.action === '입고'
-            ? existingInv.quantity + (pendingAction.quantity || 0)
-            : existingInv.quantity - (pendingAction.quantity || 0)
+          if (existingInv) {
+            await supabase.from('inventory')
+              .update({ quantity: existingInv.quantity + (pendingAction.quantity || 0) })
+              .eq('id', existingInv.id)
+          } else {
+            await supabase.from('inventory').insert([{
+              product_id: product.id,
+              warehouse_id: warehouse.id,
+              quantity: pendingAction.quantity,
+              lot_number: lotNumber
+            }])
+          }
+        } else {
+          // 출고: FIFO 순차 차감
+          const { data: inventoryLots } = await supabase
+            .from('inventory')
+            .select('id, quantity, lot_number')
+            .eq('product_id', product.id)
+            .eq('warehouse_id', warehouse.id)
+            .gt('quantity', 0)
+            .order('lot_number', { ascending: true })
 
-          await supabase.from('inventory').update({ quantity: newQty }).eq('id', existingInv.id)
-        } else if (pendingAction.action === '입고') {
-          await supabase.from('inventory').insert([{
-            product_id: product.id,
-            warehouse_id: warehouse.id,
-            quantity: pendingAction.quantity
-          }])
+          let remaining = pendingAction.quantity || 0
+          const deductions: { lot: string; deducted: number; remaining: number }[] = []
+          for (const lot of (inventoryLots || [])) {
+            if (remaining <= 0) break
+            const deduct = Math.min(lot.quantity, remaining)
+            await supabase.from('inventory')
+              .update({ quantity: lot.quantity - deduct })
+              .eq('id', lot.id)
+            remaining -= deduct
+            deductions.push({
+              lot: lot.lot_number || '미지정',
+              deducted: deduct,
+              remaining: lot.quantity - deduct
+            })
+          }
+
+          // 차감 내역을 transaction note에 업데이트
+          if (deductions.length > 0) {
+            const lotDetail = deductions.map(d => `${d.lot}:-${d.deducted}`).join(', ')
+            const updatedNote = `${noteText} | ${lotDetail}`
+            await supabase.from('transactions')
+              .update({ note: updatedNote })
+              .eq('product_id', product.id)
+              .eq('created_at', transactionDate)
+              .eq('type', pendingAction.action)
+          }
         }
 
+        // 완료 메시지 (출고 시 차감 내역 포함)
+        let completionMsg = `${pendingAction.action} 완료!\n${product.product_name} ${pendingAction.quantity?.toLocaleString()}개`
+        if (pendingAction.action === '출고') {
+          const { data: lots } = await supabase
+            .from('inventory')
+            .select('lot_number, quantity')
+            .eq('product_id', product.id)
+            .eq('warehouse_id', warehouse.id)
+            .gte('quantity', 0)
+            .order('lot_number', { ascending: true })
+
+          if (lots && lots.length > 0) {
+            completionMsg += '\n\n잔여 재고:'
+            lots.forEach(l => {
+              completionMsg += `\n- LOT ${l.lot_number}: ${l.quantity.toLocaleString()}개`
+            })
+          }
+        }
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `${pendingAction.action} 완료!\n${product.product_name} ${pendingAction.quantity?.toLocaleString()}개`
+          content: completionMsg
         }])
       }
 
@@ -339,12 +472,14 @@ export default function ChatWidget() {
       setMessages(prev => [...prev, { role: 'assistant', content: '처리 중 오류가 발생했습니다.' }])
     } finally {
       setLoading(false)
+      setTimeout(() => inputRef.current?.focus(), 100)
     }
   }
 
   function cancelAction() {
     setPendingAction(null)
     setMessages(prev => [...prev, { role: 'assistant', content: '취소되었습니다.' }])
+    setTimeout(() => inputRef.current?.focus(), 100)
   }
 
   return (
@@ -418,12 +553,14 @@ export default function ChatWidget() {
           {/* 입력 영역 */}
           <form onSubmit={handleSubmit} className="p-3 border-t flex gap-2">
             <input
+              ref={inputRef}
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="입출고 요청 입력..."
+              placeholder="입고/출고/이동 요청 입력..."
               className="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={loading || !!pendingAction}
+              autoFocus
             />
             <button
               type="submit"
