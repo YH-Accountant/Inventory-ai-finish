@@ -10,6 +10,7 @@ interface Product {
   product_name: string
   product_code: string
   unit_cost: number
+  shelf_life_months: number | null
 }
 
 interface Warehouse {
@@ -23,6 +24,7 @@ interface Transaction {
   warehouse_id: string
   type: string
   quantity: number
+  lot_number: string | null
   channel: string | null
   note: string | null
   recorded_by: string | null
@@ -71,6 +73,12 @@ export default function TransactionsPage() {
     if (month < 1 || month > 12) return false
     if (day < 1 || day > 31) return false
 
+    // 미래 날짜 차단
+    const lotDate = new Date(year, month - 1, day)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    if (lotDate > today) return false
+
     return true
   }
 
@@ -85,6 +93,20 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     fetchData()
+
+    const channel = supabase
+      .channel('transactions-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
+        fetchData()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => {
+        fetchData()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
   }, [])
 
   async function fetchData() {
@@ -93,7 +115,7 @@ export default function TransactionsPage() {
     // 활성 제품만 가져오기
     const { data: productsData } = await supabase
       .from('products')
-      .select('id, product_name, product_code, unit_cost')
+      .select('id, product_name, product_code, unit_cost, shelf_life_months')
       .eq('is_active', true)
 
     const { data: warehousesData } = await supabase
@@ -131,7 +153,7 @@ export default function TransactionsPage() {
         return
       }
       if (!isValidLotNumber(formData.lot_number)) {
-        alert('로트번호 형식이 올바르지 않습니다.\n형식: YYMMDD-NN (예: 250128-01)')
+        alert('로트번호가 올바르지 않습니다.\n형식: YYMMDD-NN (예: 250128-01)\n미래 날짜는 입력할 수 없습니다.')
         return
       }
     }
@@ -233,26 +255,7 @@ export default function TransactionsPage() {
         }
       }
 
-      // 1. 입출고 기록 저장
-      const { error: txError } = await supabase
-        .from('transactions')
-        .insert([{
-          product_id: formData.product_id,
-          warehouse_id: formData.warehouse_id,
-          type: formData.type,
-          quantity: formData.quantity,
-          channel: formData.channel || null,
-          note: formData.note || null,
-          recorded_by: profile?.name || null,
-          created_at: transactionDate
-        }])
-
-      if (txError) {
-        alert('기록 실패: ' + txError.message)
-        return
-      }
-
-      // 2. 재고 업데이트 (로트번호 기준 관리)
+      // 재고 업데이트 (로트번호 기준 관리)
       if (formData.type === '입고') {
         // 입고: 제품+창고+로트번호로 로트 찾기
         const { data: existingInventory } = await supabase
@@ -281,31 +284,98 @@ export default function TransactionsPage() {
               lot_number: formData.lot_number
             }])
         }
+
+        // 입고 기록 저장
+        const { error: txError } = await supabase
+          .from('transactions')
+          .insert([{
+            product_id: formData.product_id,
+            warehouse_id: formData.warehouse_id,
+            type: formData.type,
+            quantity: formData.quantity,
+            channel: formData.channel || null,
+            note: formData.note || null,
+            recorded_by: profile?.name || null,
+            created_at: transactionDate
+          }])
+        if (txError) { alert('기록 실패: ' + txError.message); return }
       } else {
-        // 출고: FIFO 순차 차감 (로트번호 오름차순 = 오래된 것부터)
+        // 출고: 만료/임박 로트 제외, 정상 로트만 FIFO (로트번호 오름차순)
         const { data: inventoryLots } = await supabase
           .from('inventory')
-          .select('*')
+          .select('id, quantity, lot_number')
           .eq('product_id', formData.product_id)
           .eq('warehouse_id', formData.warehouse_id)
           .gt('quantity', 0)
-          .order('lot_number', { ascending: true })
+
+        // products 상태에서 직접 shelf_life_months 가져오기 (조인 불필요)
+        const selectedProduct = products.find(p => p.id === formData.product_id)
+        const shelfLifeMonths = selectedProduct?.shelf_life_months || 24
+        console.log('[FIFO] selectedProduct:', selectedProduct)
+        console.log('[FIFO] shelfLifeMonths:', shelfLifeMonths)
+        console.log('[FIFO] inventoryLots:', inventoryLots)
+
+        const today = new Date()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const isExpiredOrWarning = (lot: any): boolean => {
+          if (!lot.lot_number || !/^\d{6}-\d{2}$/.test(lot.lot_number)) return false
+          const y = parseInt('20' + lot.lot_number.substring(0, 2))
+          const m = parseInt(lot.lot_number.substring(2, 4)) - 1
+          const d = parseInt(lot.lot_number.substring(4, 6))
+          const expiry = new Date(y, m, d)
+          expiry.setMonth(expiry.getMonth() + shelfLifeMonths)
+          const days = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+          const result = days <= shelfLifeMonths * 30 * 0.25
+          console.log(`[FIFO] lot: ${lot.lot_number}, days: ${days}, threshold: ${shelfLifeMonths * 30 * 0.25}, isExpiredOrWarning: ${result}`)
+          return result
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const eligible = (inventoryLots || [])
+          .filter((lot: any) => !isExpiredOrWarning(lot))
+          .sort((a: any, b: any) => {
+            if (a.lot_number && b.lot_number) return a.lot_number.localeCompare(b.lot_number)
+            return 0
+          })
+        console.log('[FIFO] eligible lots:', eligible)
+
+        const eligibleTotal = eligible.reduce((sum: number, lot: any) => sum + lot.quantity, 0)
+        if (eligibleTotal < formData.quantity) {
+          alert(`출고 가능 재고 부족!\n\n만료/임박 로트 제외 후 가용 재고: ${eligibleTotal.toLocaleString()}개\n요청: ${formData.quantity.toLocaleString()}개\n\n(만료/임박 로트는 출고에서 제외됩니다)`)
+          return
+        }
 
         let remaining = formData.quantity
-        for (const lot of (inventoryLots || [])) {
+        const lotDeductions: string[] = []
+        for (const lot of eligible) {
           if (remaining <= 0) break
-
           const deduct = Math.min(lot.quantity, remaining)
-          await supabase
-            .from('inventory')
-            .update({
-              quantity: lot.quantity - deduct,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', lot.id)
-
+          const newQty = lot.quantity - deduct
+          lotDeductions.push(`${lot.lot_number} ${deduct.toLocaleString()}개`)
+          if (newQty <= 0) {
+            await supabase.from('inventory').delete().eq('id', lot.id)
+          } else {
+            await supabase.from('inventory').update({ quantity: newQty, updated_at: new Date().toISOString() }).eq('id', lot.id)
+          }
           remaining -= deduct
         }
+
+        // 재고 차감 성공 후 출고 기록 저장 (로트 정보 포함)
+        const lotNote = `[로트] ${lotDeductions.join(' / ')}`
+        const finalNote = formData.note ? `${formData.note} | ${lotNote}` : lotNote
+        const { error: txError } = await supabase
+          .from('transactions')
+          .insert([{
+            product_id: formData.product_id,
+            warehouse_id: formData.warehouse_id,
+            type: formData.type,
+            quantity: formData.quantity,
+            channel: formData.channel || null,
+            note: finalNote,
+            recorded_by: profile?.name || null,
+            created_at: transactionDate
+          }])
+        if (txError) { alert('기록 실패: ' + txError.message); return }
       }
 
       alert(`${formData.type} 완료!`)
@@ -381,22 +451,36 @@ export default function TransactionsPage() {
         }
       } else {
         // 일반 입고/출고 삭제
-        const { data: inventory } = await supabase
+        let inventoryQuery = supabase
           .from('inventory')
           .select('id, quantity')
           .eq('product_id', tx.product_id)
           .eq('warehouse_id', tx.warehouse_id)
-          .single()
+
+        // 입고 삭제 시 lot_number로 정확한 로트 찾기
+        if (tx.type === '입고' && tx.lot_number) {
+          inventoryQuery = inventoryQuery.eq('lot_number', tx.lot_number)
+        }
+
+        const { data: inventory } = await inventoryQuery.single()
 
         if (inventory) {
           const restoredQty = tx.type === '입고'
             ? inventory.quantity - tx.quantity  // 입고 삭제 → 재고 감소
             : inventory.quantity + tx.quantity  // 출고 삭제 → 재고 증가
 
-          await supabase
-            .from('inventory')
-            .update({ quantity: restoredQty, updated_at: new Date().toISOString() })
-            .eq('id', inventory.id)
+          if (restoredQty <= 0) {
+            // 수량이 0이하면 재고 레코드 삭제
+            await supabase
+              .from('inventory')
+              .delete()
+              .eq('id', inventory.id)
+          } else {
+            await supabase
+              .from('inventory')
+              .update({ quantity: restoredQty, updated_at: new Date().toISOString() })
+              .eq('id', inventory.id)
+          }
         }
       }
 
@@ -434,7 +518,15 @@ export default function TransactionsPage() {
             <h1 className="text-3xl font-bold text-gray-900">입출고 관리</h1>
           </div>
           <button
-            onClick={() => setShowForm(!showForm)}
+            onClick={() => {
+              if (!showForm) {
+                const today = getTodayString()
+                const [yyyy, mm, dd] = today.split('-')
+                const prefix = `${yyyy.slice(-2)}${mm}${dd}-`
+                setFormData(f => ({ ...f, transaction_date: today, lot_number: prefix }))
+              }
+              setShowForm(!showForm)
+            }}
             className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition"
           >
             {showForm ? '취소' : '+ 입출고 등록'}
@@ -504,7 +596,12 @@ export default function TransactionsPage() {
                 <input
                   type="date"
                   value={formData.transaction_date || getTodayString()}
-                  onChange={(e) => setFormData({...formData, transaction_date: e.target.value})}
+                  onChange={(e) => {
+                    const newDate = e.target.value
+                    const parts = newDate.split('-')
+                    const prefix = parts.length === 3 ? `${parts[0].slice(-2)}${parts[1]}${parts[2]}-` : ''
+                    setFormData({...formData, transaction_date: newDate, lot_number: prefix})
+                  }}
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
                 />
               </div>
@@ -679,9 +776,19 @@ export default function TransactionsPage() {
                         {isTransfer && additionalNote && (
                           <p className="text-sm text-gray-400">메모: {additionalNote}</p>
                         )}
-                        {!isTransfer && tx.note && (
-                          <p className="text-sm text-gray-400">메모: {tx.note}</p>
-                        )}
+                        {!isTransfer && (() => {
+                          const lotMatch = tx.note?.match(/\[로트\] (.+)$/)
+                          const lotInfo = lotMatch?.[1] ?? null
+                          const userNote = tx.note
+                            ? tx.note.replace(/\s*\|\s*\[로트\].*$/, '').replace(/^\[로트\].*$/, '').trim() || null
+                            : null
+                          return (
+                            <>
+                              {userNote && <p className="text-sm text-gray-400">메모: {userNote}</p>}
+                              {lotInfo && <p className="text-xs text-gray-400">{lotInfo}</p>}
+                            </>
+                          )
+                        })()}
                       </div>
                     </div>
                     <div className="flex items-center gap-4">

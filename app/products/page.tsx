@@ -33,6 +33,17 @@ export default function ProductsPage() {
 
   useEffect(() => {
     fetchProducts()
+
+    const channel = supabase
+      .channel('products-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
   }, [])
 
   async function fetchProducts() {

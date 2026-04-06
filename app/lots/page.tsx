@@ -33,6 +33,7 @@ interface LotGroup {
   status: 'normal' | 'warning' | 'expired' | 'unknown'
   daysRemaining: number | null
   items: {
+    id: string
     warehouse: Warehouse
     quantity: number
   }[]
@@ -104,6 +105,18 @@ export default function LotsPage() {
 
   useEffect(() => {
     fetchData()
+
+    // inventory 테이블 변경 시 자동 새로고침
+    const channel = supabase
+      .channel('lots-inventory-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => {
+        fetchData()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
   }, [])
 
   function toggleProduct(productId: string) {
@@ -192,6 +205,7 @@ export default function LotsPage() {
 
       const group = lotMap.get(key)!
       group.items.push({
+        id: item.id,
         warehouse: item.warehouses,
         quantity: item.quantity
       })

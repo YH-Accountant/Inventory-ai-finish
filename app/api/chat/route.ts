@@ -14,13 +14,14 @@ interface InventoryItem {
   product_id: string
   warehouse_id: string
   quantity: number
+  lot_number?: string
   products: { product_name: string }
   warehouses: { name: string }
 }
 
 export async function POST(request: Request) {
   try {
-    const { message, products, warehouses, inventory, history } = await request.json()
+    const { message, products, warehouses, inventory, todayTransactions, history } = await request.json()
 
     // 오늘 날짜 정보 (동적 생성)
     const now = new Date()
@@ -39,10 +40,51 @@ export async function POST(request: Request) {
     // 창고 목록을 문자열로 변환
     const warehouseList = warehouses.map((w: { name: string }) => `- ${w.name}`).join('\n')
 
-    // 재고 현황을 문자열로 변환 (제품별로 어떤 창고에 얼마나 있는지)
-    const inventoryList = (inventory || []).map((item: InventoryItem) =>
-      `- ${item.products?.product_name}: ${item.warehouses?.name}에 ${item.quantity}개`
-    ).join('\n')
+    // 재고 현황을 문자열로 변환 (로트번호, 유통기한 포함)
+    const productMap = new Map((products || []).map((p: { product_name: string; shelf_life_months?: number }) => [p.product_name, p.shelf_life_months || 24]))
+    const today = new Date()
+
+    // 잔여일 계산 + 상태 라벨 + 오름차순 정렬
+    const inventoryWithDays = (inventory || []).map((item: InventoryItem) => {
+      let diffDays: number | null = null
+      let expiryStr = ''
+      let status = '정상'
+
+      if (item.lot_number && /^\d{6}-\d{2}$/.test(item.lot_number)) {
+        const y = parseInt('20' + item.lot_number.substring(0, 2))
+        const m = parseInt(item.lot_number.substring(2, 4)) - 1
+        const d = parseInt(item.lot_number.substring(4, 6))
+        const expiry = new Date(y, m, d)
+        const shelfLife = (productMap.get(item.products?.product_name) as number) || 24
+        expiry.setMonth(expiry.getMonth() + shelfLife)
+        diffDays = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+        expiryStr = `${expiry.getFullYear()}-${String(expiry.getMonth()+1).padStart(2,'0')}-${String(expiry.getDate()).padStart(2,'0')}`
+        const threshold = shelfLife * 30 * 0.25
+        if (diffDays <= 0) status = '만료'
+        else if (diffDays <= threshold) status = '임박'
+      }
+
+      return { item, diffDays, expiryStr, status }
+    })
+    .sort((a: { diffDays: number | null }, b: { diffDays: number | null }) => {
+      if (a.diffDays === null) return 1
+      if (b.diffDays === null) return -1
+      return a.diffDays - b.diffDays
+    })
+
+    const inventoryList = inventoryWithDays.map(({ item, diffDays, expiryStr, status }: { item: InventoryItem; diffDays: number | null; expiryStr: string; status: string }) => {
+      const lotInfo = item.lot_number
+        ? ` [LOT:${item.lot_number} 만료일:${expiryStr} 잔여:${diffDays}일 상태:${status}]`
+        : ''
+      return `- ${item.products?.product_name}: ${item.warehouses?.name}에 ${item.quantity}개${lotInfo}`
+    }).join('\n')
+
+    // 오늘 입출고 이력 변환
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const todayTxList = (todayTransactions || []).map((tx: any) => {
+      const time = new Date(tx.created_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+      return `- [${time}] ${tx.type} / ${tx.products?.product_name} / ${tx.warehouses?.name} / ${tx.quantity.toLocaleString()}개${tx.channel ? ` / 채널:${tx.channel}` : ''}${tx.note ? ` / ${tx.note}` : ''}`
+    }).join('\n')
 
     const systemPrompt = `당신은 재고관리 AI 어시스턴트입니다. 대화 맥락을 이해하고, 필요한 정보만 질문하세요.
 
@@ -56,9 +98,12 @@ ${warehouseList || '(없음)'}
 **재고 현황:**
 ${inventoryList || '(없음)'}
 
+**오늘 입출고 이력:**
+${todayTxList || '(없음)'}
+
 ## 응답 형식 (JSON만)
 {
-  "action": "입고" | "출고" | "창고이동" | "조회" | "질문",
+  "action": "입고" | "출고" | "창고이동" | "조회" | "질문" | "답변",
   "product_name": "확정된 제품명 (정확한 전체 이름)",
   "quantity": 숫자,
   "warehouse": "출고 창고",
@@ -68,6 +113,12 @@ ${inventoryList || '(없음)'}
   "lot_number": "YYMMDD-01 형식 (입고시 로트번호)",
   "message": "사용자에게 보여줄 메시지"
 }
+
+## action 선택 기준
+- 입고/출고/창고이동: 실제 재고 변동이 필요한 요청
+- 조회: 재고 수량 조회
+- 질문: 추가 정보가 필요할 때
+- **답변**: 유통기한, 만료/임박 현황, 통계, 설명 등 정보성 질문 → message에 한국어로 자유롭게 답변
 
 ## 로트번호 규칙 (입고시 필수)
 - 입고 시 반드시 lot_number를 포함하세요
@@ -94,9 +145,13 @@ ${inventoryList || '(없음)'}
 
 ### 1. 제품 확인 규칙 (매우 중요!)
 - **반드시 위 "등록된 제품" 목록에 있는 제품만 사용!** 목록에 없는 제품은 절대 언급 금지!
-- 사용자가 입력한 키워드가 **목록 내 여러 제품명에 포함**되면 → 반드시 질문!
-- 예: "화이트닝" 입력 → 목록에서 "화이트닝" 포함 제품 검색 → 2개 이상이면 질문
-- **1개만 매칭되면 질문 안함, 2개 이상 매칭되면 반드시 질문**
+- 사용자가 입력한 키워드로 목록을 검색한 후:
+  - **매칭 0개** → "등록된 제품이 없습니다" 안내
+  - **매칭 1개** → 질문 절대 금지! 그 제품으로 자동 확정하고 다음 단계 진행
+  - **매칭 2개 이상** → 반드시 질문
+- 예: "세럼" 입력 → 목록에 "세럼" 포함 제품이 "비타민C세럼" 1개뿐 → **질문 없이 자동 선택**
+- 예: "화이트닝" 입력 → "화이트닝세럼", "화이트닝크림" 2개 → 질문 필요
+- **경고: 1개만 매칭되는데 질문하는 것은 잘못된 동작입니다!**
 - **목록에 없는 제품을 절대 만들어내지 마세요!**
 
 ### 2. 창고 확인 규칙
@@ -104,9 +159,10 @@ ${inventoryList || '(없음)'}
 - 여러 창고에 있음 → 질문 필요
 
 ### 3. 출고 유형 규칙
-- 외부 채널 키워드 있음 (올리브영, 홈쇼핑, 쿠팡 등) → 외부출고
-- 창고명 키워드 있음 (본사, 충주 등) + "이동" → 창고이동
-- 불명확 → 질문
+- 외부 채널 키워드 있음 (올리브영, 홈쇼핑, 쿠팡 등) → 외부출고 (action: "출고", channel 포함)
+- 창고명 키워드 있음 (본사, 충주 등) + "이동" → 창고이동 (action: "창고이동", to_warehouse 포함)
+- 불명확 → 반드시 action: "질문" 으로 물어볼 것
+- **절대 금지**: channel도 없고 to_warehouse도 없는데 action: "출고" 반환하지 말 것!
 
 ### 4. 채널 규칙
 - 외부출고인데 채널 없음 → 질문 필수
