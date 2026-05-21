@@ -527,7 +527,7 @@ export async function POST(request: Request) {
         console.log('🤖 [Chat] 최종 응답:', content.substring(0, 300))
         try {
           // JSON 블록 추출 (```json ... ``` 또는 { ... } 형태)
-          const jsonMatch = content.match(/```json\n?([\s\S]*?)\n?```/) || content.match(/(\{[\s\S]*?\})/s)
+          const jsonMatch = content.match(/```json\n?([\s\S]*?)\n?```/) || content.match(/(\{[\s\S]*?\})/)
           const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : content
           const parsed = JSON.parse(jsonStr.trim())
           if (!parsed.action) {
