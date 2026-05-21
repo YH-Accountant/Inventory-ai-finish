@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import Link from 'next/link'
+import { useAuth } from '@/app/contexts/AuthContext'
+import Navbar from '@/app/components/Navbar'
 
 interface Product {
   id: string
@@ -98,10 +99,14 @@ function getWorstStatus(lots: LotGroup[]): LotGroup['status'] {
 }
 
 export default function LotsPage() {
+  const { profile } = useAuth()
   const [productGroups, setProductGroups] = useState<ProductGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'warning' | 'expired'>('all')
   const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set())
+  const [search, setSearch] = useState('')
+  const [companyShelfLife, setCompanyShelfLife] = useState(24)
+  const [companyWarningRatio, setCompanyWarningRatio] = useState(0.25)
 
   useEffect(() => {
     fetchData()
@@ -132,7 +137,20 @@ export default function LotsPage() {
   }
 
   async function fetchData() {
+    if (!profile?.company_id) return
     setLoading(true)
+
+    // 회사 설정 불러오기
+    const { data: companyData } = await supabase
+      .from('companies')
+      .select('default_shelf_life_months, shelf_life_warning_ratio')
+      .eq('id', profile.company_id)
+      .single()
+    const shelfLife = companyData?.default_shelf_life_months || 24
+    const warningRatio = companyData?.shelf_life_warning_ratio || 0.25
+    setCompanyShelfLife(shelfLife)
+    setCompanyWarningRatio(warningRatio)
+    console.log('🏢 shelfLife:', shelfLife, '/ warningRatio:', warningRatio, '/ companyData:', JSON.stringify(companyData))
 
     const { data: inventoryData } = await supabase
       .from('inventory')
@@ -141,6 +159,7 @@ export default function LotsPage() {
         products (*),
         warehouses (*)
       `)
+      .eq('company_id', profile.company_id)
 
     if (!inventoryData) {
       setProductGroups([])
@@ -153,6 +172,7 @@ export default function LotsPage() {
       inventoryData.map((item: InventoryItem) => item.products?.product_name).filter(Boolean)
     )] as string[]
     const nonPerishableSet = await classifyNonPerishableProducts(uniqueProductNames)
+    console.log('🤖 비소모품으로 분류된 제품:', [...nonPerishableSet])
 
     // 1단계: 제품+로트번호로 로트 그룹 생성
     const lotMap = new Map<string, LotGroup & { product: Product }>()
@@ -161,7 +181,7 @@ export default function LotsPage() {
       const key = `${item.product_id}_${item.lot_number || 'none'}`
 
       if (!lotMap.has(key)) {
-        const shelfLifeMonths = item.products?.shelf_life_months || 24
+        const shelfLifeMonths = item.products?.shelf_life_months || shelfLife
         let expiryDate: Date | null = null
         let status: LotGroup['status'] = 'unknown'
         let daysRemaining: number | null = null
@@ -180,7 +200,11 @@ export default function LotsPage() {
           const remainingMs = expiryDate.getTime() - today.getTime()
           daysRemaining = Math.ceil(remainingMs / (1000 * 60 * 60 * 24))
 
-          const warningThresholdDays = totalDays * 0.25
+          const warningThresholdDays = totalDays * warningRatio
+
+          if (item.lot_number?.startsWith('250')) {
+            console.log('📦 임박체크:', item.lot_number, '| 제조일:', mfgDate.toLocaleDateString(), '| 유통기한:', expiryDate.toLocaleDateString(), '| 남은일:', daysRemaining, '| 임박기준:', warningThresholdDays, '| shelfLife:', shelfLifeMonths)
+          }
 
           if (daysRemaining <= 0) {
             status = 'expired'
@@ -279,8 +303,13 @@ export default function LotsPage() {
     (sum, g) => sum + g.lots.filter(l => l.status === 'expired').length, 0
   )
 
-  // 필터 적용: 해당 로트가 있는 제품만 표시
+  // 필터 + 검색 적용
   const filteredGroups = productGroups
+    .filter(group => {
+      if (!search) return true
+      return group.product.product_name.toLowerCase().includes(search.toLowerCase()) ||
+        group.product.product_code.toLowerCase().includes(search.toLowerCase())
+    })
     .map(group => {
       if (filter === 'all') return group
       const filteredLots = group.lots.filter(lot => {
@@ -341,15 +370,14 @@ export default function LotsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
+    <>
+      <Navbar />
+      <div className="min-h-screen bg-slate-50 pt-20 p-8">
       <div className="max-w-6xl mx-auto">
         {/* 헤더 */}
         <div className="mb-8">
-          <Link href="/" className="text-blue-600 hover:underline mb-2 inline-block">
-            ← 대시보드로
-          </Link>
-          <h1 className="text-3xl font-bold text-gray-900">로트 관리</h1>
-          <p className="text-gray-600 mt-1">제품별 로트 현황 및 유통기한 관리</p>
+          <h1 className="text-2xl font-bold text-gray-900">로트 관리</h1>
+          <p className="text-gray-500 mt-1">제품별 로트 현황 및 유통기한 관리</p>
         </div>
 
         {/* 요약 카드 */}
@@ -370,7 +398,7 @@ export default function LotsPage() {
           >
             <h3 className="text-sm font-medium text-yellow-600">유통기한 임박</h3>
             <p className="text-3xl font-bold text-yellow-600 mt-2">{warningCount}개</p>
-            <p className="text-xs text-gray-400 mt-1">유통기한 25% 이하</p>
+            <p className="text-xs text-gray-400 mt-1">유통기한 {Math.round(companyWarningRatio * 100)}% 이하</p>
           </div>
           <div
             className={`bg-white rounded-lg shadow p-6 cursor-pointer transition hover:ring-2 hover:ring-red-400 ${
@@ -383,39 +411,48 @@ export default function LotsPage() {
           </div>
         </div>
 
-        {/* 필터 탭 */}
+        {/* 필터 탭 + 검색 */}
         <div className="bg-white rounded-lg shadow mb-6">
-          <div className="p-4 border-b flex gap-2">
-            <button
-              onClick={() => setFilter('all')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                filter === 'all'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              전체 ({totalLotCount})
-            </button>
-            <button
-              onClick={() => setFilter('warning')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                filter === 'warning'
-                  ? 'bg-yellow-500 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              임박/만료 ({warningCount + expiredCount})
-            </button>
-            <button
-              onClick={() => setFilter('expired')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                filter === 'expired'
-                  ? 'bg-red-600 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              만료 ({expiredCount})
-            </button>
+          <div className="p-4 border-b flex items-center gap-3 flex-wrap">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setFilter('all')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                  filter === 'all'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                전체 ({totalLotCount})
+              </button>
+              <button
+                onClick={() => setFilter('warning')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                  filter === 'warning'
+                    ? 'bg-yellow-500 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                임박/만료 ({warningCount + expiredCount})
+              </button>
+              <button
+                onClick={() => setFilter('expired')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                  filter === 'expired'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                만료 ({expiredCount})
+              </button>
+            </div>
+            <input
+              type="text"
+              placeholder="제품명 검색..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="ml-auto border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-48"
+            />
           </div>
         </div>
 
@@ -530,5 +567,6 @@ export default function LotsPage() {
         </div>
       </div>
     </div>
+    </>
   )
 }

@@ -9,6 +9,8 @@ interface Profile {
   email: string
   name: string
   role: '본사' | '창고'
+  onboarding_completed: boolean
+  company_id: string | null
 }
 
 interface AuthContextType {
@@ -16,13 +18,15 @@ interface AuthContextType {
   profile: Profile | null
   loading: boolean
   signOut: () => Promise<void>
+  completeOnboarding: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   profile: null,
   loading: true,
-  signOut: async () => {}
+  signOut: async () => {},
+  completeOnboarding: async () => {}
 })
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -74,8 +78,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setProfile(null)
   }
 
+  async function completeOnboarding() {
+    if (!user) return
+    await supabase
+      .from('profiles')
+      .update({ onboarding_completed: true })
+      .eq('id', user.id)
+    // DB에서 최신 profile 다시 읽어서 반영
+    await fetchProfile(user.id)
+  }
+
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signOut }}>
+    <AuthContext.Provider value={{ user, profile, loading, signOut, completeOnboarding }}>
       {children}
     </AuthContext.Provider>
   )

@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import Link from 'next/link'
+import { useAuth } from '@/app/contexts/AuthContext'
+import Navbar from '@/app/components/Navbar'
 import * as XLSX from 'xlsx'
 
 interface Warehouse {
@@ -29,7 +30,8 @@ interface ParsedProduct {
   product_group: string
   product_name: string
   product_code: string
-  lot_number: string | null  // 로트번호 추가
+  unit_cost: number
+  lot_number: string | null
   inventories: {
     warehouse_name: string
     quantity: number
@@ -40,9 +42,10 @@ interface ColumnMapping {
   product_name: string
   product_code: string
   product_group: string
+  unit_cost: string
   lot_number: string
-  general_qty: string  // 창고 구분 없는 일반 재고
-  warehouse_qty: { [warehouseId: string]: string }  // 창고별 재고 컬럼 매핑 (기존 DB 창고용)
+  general_qty: string
+  warehouse_qty: { [warehouseId: string]: string }
 }
 
 // 엑셀에서 감지된 창고 정보
@@ -59,7 +62,19 @@ function dateToLotNumber(dateValue: string | number | Date | undefined): string 
 
   // 엑셀 시리얼 날짜 (숫자)
   if (typeof dateValue === 'number') {
-    // 엑셀 날짜 시리얼을 JS Date로 변환
+    // 6자리 숫자 → YYMMDD 형식으로 직접 처리 (예: 250601 → "250601")
+    const str = String(Math.round(dateValue))
+    if (str.length === 6) {
+      const yy = str.slice(0, 2)
+      const mm = str.slice(2, 4)
+      const dd = str.slice(4, 6)
+      const mNum = parseInt(mm)
+      const dNum = parseInt(dd)
+      if (mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
+        return `${yy}${mm}${dd}-01`
+      }
+    }
+    // 일반 엑셀 시리얼 날짜 → JS Date 변환
     const excelEpoch = new Date(1899, 11, 30)
     date = new Date(excelEpoch.getTime() + dateValue * 24 * 60 * 60 * 1000)
   }
@@ -72,6 +87,14 @@ function dateToLotNumber(dateValue: string | number | Date | undefined): string 
     // 이미 로트번호 형식인지 확인 (YYMMDD-NN)
     if (/^\d{6}-\d{2}$/.test(dateValue)) {
       return dateValue
+    }
+    // 6자리 숫자 문자열 → YYMMDD 직접 처리 (예: "250601" → "250601-01")
+    if (/^\d{6}$/.test(dateValue)) {
+      const mm = parseInt(dateValue.slice(2, 4))
+      const dd = parseInt(dateValue.slice(4, 6))
+      if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+        return `${dateValue}-01`
+      }
     }
     // 날짜 문자열 파싱 시도
     const parsed = new Date(dateValue)
@@ -146,6 +169,7 @@ function extractLotNumber(row: ExcelRow): string | null {
 }
 
 export default function UploadPage() {
+  const { profile } = useAuth()
   const [parsedData, setParsedData] = useState<ParsedProduct[]>([])
   const [uploading, setUploading] = useState(false)
   const [fileName, setFileName] = useState('')
@@ -155,13 +179,17 @@ export default function UploadPage() {
   const [deleteStep, setDeleteStep] = useState<1 | 2>(1)  // 2단계 확인
   const [detectedColumns, setDetectedColumns] = useState<string[]>([])  // 감지된 컬럼명
   const [rawData, setRawData] = useState<ExcelRow[]>([])  // 원본 엑셀 데이터
-  const [uploadStep, setUploadStep] = useState<'file' | 'mapping' | 'preview'>('file')  // 업로드 단계
+  const [uploadStep, setUploadStep] = useState<'file' | 'sheet' | 'mapping' | 'preview'>('file')  // 업로드 단계
+  const [allSheets, setAllSheets] = useState<{ name: string; rowCount: number }[]>([])  // 전체 시트 목록
+  const [selectedSheets, setSelectedSheets] = useState<string[]>([])  // 선택된 시트
+  const [workbookRef, setWorkbookRef] = useState<XLSX.WorkBook | null>(null)  // 워크북 참조
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])  // DB에서 가져온 창고 목록
   const [detectedWarehouses, setDetectedWarehouses] = useState<DetectedWarehouse[]>([])  // 엑셀에서 감지된 창고
   const [columnMapping, setColumnMapping] = useState<ColumnMapping>({
     product_name: '',
     product_code: '',
     product_group: '',
+    unit_cost: '',
     lot_number: '',
     general_qty: '',
     warehouse_qty: {}
@@ -171,7 +199,7 @@ export default function UploadPage() {
   useEffect(() => {
     async function fetchWarehouses() {
       console.log('🏭 [시작] 창고 목록 불러오기...')
-      const { data, error } = await supabase.from('warehouses').select('id, name')
+      const { data, error } = await supabase.from('warehouses').select('id, name').eq('company_id', profile?.company_id || '')
       if (error) {
         console.error('❌ [에러] 창고 목록 불러오기 실패:', error.message)
         return
@@ -207,40 +235,20 @@ export default function UploadPage() {
       console.log('📖 [진행] 파일 읽기 완료, 엑셀 파싱 시작...')
       const data = event.target?.result
       const workbook = XLSX.read(data, { type: 'binary' })
-      const sheetName = workbook.SheetNames[0]
-      console.log(`📊 [정보] 시트명: "${sheetName}", 전체 시트 수: ${workbook.SheetNames.length}`)
+      console.log(`📊 [정보] 전체 시트 수: ${workbook.SheetNames.length}, 시트명:`, workbook.SheetNames)
 
-      const worksheet = workbook.Sheets[sheetName]
-      const jsonData = XLSX.utils.sheet_to_json<ExcelRow>(worksheet)
+      // 각 시트 행 수 파악
+      const sheets = workbook.SheetNames.map(sName => {
+        const ws = workbook.Sheets[sName]
+        const rows = XLSX.utils.sheet_to_json<ExcelRow>(ws)
+        return { name: sName, rowCount: rows.length }
+      })
 
-      console.log(`✅ [성공] 엑셀 파싱 완료: ${jsonData.length}개 행 발견`)
-
-      // 감지된 컬럼명 저장
-      if (jsonData.length > 0) {
-        const columns = Object.keys(jsonData[0])
-        setDetectedColumns(columns)
-        setRawData(jsonData)
-        console.log(`📋 [정보] 감지된 컬럼 (${columns.length}개):`, columns)
-
-        // AI 기반 컬럼 자동 매핑 추론
-        console.log('🤖 [진행] AI 컬럼 자동 매핑 시작...')
-        const autoMapping = await autoDetectColumnMapping(columns)
-        console.log('🤖 [결과] AI 매핑 결과:', {
-          제품명: autoMapping.product_name || '(미감지)',
-          품번: autoMapping.product_code || '(미감지)',
-          제품군: autoMapping.product_group || '(미감지)',
-          로트번호: autoMapping.lot_number || '(미감지)',
-          일반재고: autoMapping.general_qty || '(미감지)',
-          창고별재고: autoMapping.warehouse_qty
-        })
-        setColumnMapping(autoMapping)
-
-        // 매핑 단계로 이동
-        setUploadStep('mapping')
-        console.log('➡️ [단계] 2단계(컬럼 매핑)로 이동')
-      } else {
-        console.log('⚠️ [경고] 엑셀에 데이터가 없습니다 (0개 행)')
-      }
+      setAllSheets(sheets)
+      setSelectedSheets(sheets.map(s => s.name))  // 전부 체크
+      setWorkbookRef(workbook)
+      setUploadStep('sheet')
+      console.log('➡️ [단계] 1-1단계(시트 선택)로 이동')
     }
     reader.onerror = (error) => {
       console.error('❌ [에러] 파일 읽기 실패:', error)
@@ -335,18 +343,20 @@ export default function UploadPage() {
       product_name: '',
       product_code: '',
       product_group: '',
+      unit_cost: '',
       lot_number: '',
       general_qty: '',
       warehouse_qty: warehouseQtyMapping
     }
 
     // 기본 필드 패턴
-    const fieldPatterns: { field: 'product_name' | 'product_code' | 'product_group' | 'lot_number' | 'general_qty'; keywords: string[] }[] = [
+    const fieldPatterns: { field: 'product_name' | 'product_code' | 'product_group' | 'lot_number' | 'general_qty' | 'unit_cost'; keywords: string[] }[] = [
       { field: 'product_name', keywords: ['제품명', '상품명', '품명', '이름', 'name', 'product', '제품'] },
       { field: 'product_code', keywords: ['품번', '제품코드', '상품코드', '코드', 'code', 'sku', 'id'] },
       { field: 'product_group', keywords: ['제품군', '품목군', '카테고리', 'category', '분류', '그룹'] },
       { field: 'lot_number', keywords: ['로트', 'lot', '제조일', '생산일', 'mfg', '배치', 'batch'] },
-      { field: 'general_qty', keywords: ['총재고', '현재고', '전체재고', 'total'] }
+      { field: 'general_qty', keywords: ['총재고', '현재고', '전체재고', 'total'] },
+      { field: 'unit_cost', keywords: ['제조원가', '원가', '단가', 'cost', '제조단가'] }
     ]
 
     // 기본 필드 매핑
@@ -368,6 +378,33 @@ export default function UploadPage() {
     return mapping
   }
 
+  // 시트 선택 완료 후 컬럼 매핑 단계로 진행
+  async function proceedFromSheetSelection() {
+    if (!workbookRef || selectedSheets.length === 0) return
+
+    const allRows: ExcelRow[] = []
+    for (const sName of selectedSheets) {
+      const ws = workbookRef.Sheets[sName]
+      const rows = XLSX.utils.sheet_to_json<ExcelRow>(ws)
+      rows.forEach(row => { row['__sheet_name__'] = sName })
+      allRows.push(...rows)
+      console.log(`   📋 시트 "${sName}": ${rows.length}개 행 추가`)
+    }
+
+    if (allRows.length === 0) {
+      alert('선택한 시트에 데이터가 없습니다.')
+      return
+    }
+
+    const columns = Object.keys(allRows[0]).filter(c => c !== '__sheet_name__')
+    setDetectedColumns(columns)
+    setRawData(allRows)
+
+    const autoMapping = await autoDetectColumnMapping(columns)
+    setColumnMapping(autoMapping)
+    setUploadStep('mapping')
+  }
+
   // 매핑 적용하여 데이터 파싱
   function applyMappingAndParse() {
     console.log('🔄 [시작] 매핑 적용 및 데이터 파싱...')
@@ -382,6 +419,11 @@ export default function UploadPage() {
       const productName = columnMapping.product_name ? String(row[columnMapping.product_name] || '') : ''
       const productCode = columnMapping.product_code ? String(row[columnMapping.product_code] || '') : ''
       const productGroup = columnMapping.product_group ? String(row[columnMapping.product_group] || '') : ''
+
+      // 제조원가 추출
+      const unitCost = columnMapping.unit_cost && row[columnMapping.unit_cost]
+        ? Number(row[columnMapping.unit_cost]) || 0
+        : 0
 
       // 로트번호 추출
       let lotNumber: string | null = null
@@ -404,12 +446,18 @@ export default function UploadPage() {
         }
       }
 
-      // 감지된 창고가 없고, 일반 재고 컬럼이 있으면 "기본창고"로 할당
+      // 감지된 창고가 없고, 일반 재고 컬럼이 있으면 시트 이름(없으면 "기본창고")으로 할당
       if (inventories.length === 0 && columnMapping.general_qty && row[columnMapping.general_qty]) {
         const qty = Number(row[columnMapping.general_qty])
         if (qty > 0) {
-          inventories.push({ warehouse_name: '기본창고', quantity: qty })
-          console.log(`   📦 [행${index + 1}] 일반재고 → 기본창고: ${qty}개`)
+          const rawSheet = String(row['__sheet_name__'] || '기본창고')
+          // 시트 이름에서 창고명만 추출 (불필요한 접두/접미어 제거)
+          const warehouseName = rawSheet
+            .replace(/\d+월\s*/g, '')           // "12월 " 제거
+            .replace(/재고현황|현황|재고|수량/g, '') // 불필요 단어 제거
+            .trim() || rawSheet
+          inventories.push({ warehouse_name: warehouseName, quantity: qty })
+          console.log(`   📦 [행${index + 1}] 일반재고 → ${warehouseName} (원본 시트: "${rawSheet}"): ${qty}개`)
         }
       }
 
@@ -427,6 +475,7 @@ export default function UploadPage() {
         product_group: productGroup,
         product_name: finalProductName,
         product_code: finalProductCode,
+        unit_cost: unitCost,
         lot_number: lotNumber,
         inventories
       }
@@ -461,25 +510,38 @@ export default function UploadPage() {
     setDeleting(true)
 
     try {
+      const cid = profile?.company_id || ''
       if (deleteOption === 'all') {
-        // 전체 삭제: 트랜잭션 → 재고 → 제품 → 창고 순서로 삭제 (외래키 제약)
-        console.log('   1/4 트랜잭션 삭제 중...')
-        const { error: e1 } = await supabase.from('transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+        // 전체 삭제: plan_items → product_plans → transactions → 재고 → 제품 → 창고 순서
+        console.log('   1/6 기획 구성품 삭제 중...')
+        const { data: planIds } = await supabase.from('product_plans').select('id').eq('company_id', cid)
+        if (planIds && planIds.length > 0) {
+          await supabase.from('plan_items').delete().in('plan_id', planIds.map(p => p.id))
+        }
+        console.log('   ✅ 기획 구성품 삭제 완료')
+
+        console.log('   2/6 기획 삭제 중...')
+        const { error: ep } = await supabase.from('product_plans').delete().eq('company_id', cid)
+        if (ep) console.error('   ❌ 기획 삭제 실패:', ep.message)
+        else console.log('   ✅ 기획 삭제 완료')
+
+        console.log('   3/6 트랜잭션 삭제 중...')
+        const { error: e1 } = await supabase.from('transactions').delete().eq('company_id', cid)
         if (e1) console.error('   ❌ 트랜잭션 삭제 실패:', e1.message)
         else console.log('   ✅ 트랜잭션 삭제 완료')
 
-        console.log('   2/4 재고 삭제 중...')
-        const { error: e2 } = await supabase.from('inventory').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+        console.log('   4/6 재고 삭제 중...')
+        const { error: e2 } = await supabase.from('inventory').delete().eq('company_id', cid)
         if (e2) console.error('   ❌ 재고 삭제 실패:', e2.message)
         else console.log('   ✅ 재고 삭제 완료')
 
-        console.log('   3/4 제품 삭제 중...')
-        const { error: e3 } = await supabase.from('products').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+        console.log('   5/6 제품 삭제 중...')
+        const { error: e3 } = await supabase.from('products').delete().eq('company_id', cid)
         if (e3) console.error('   ❌ 제품 삭제 실패:', e3.message)
         else console.log('   ✅ 제품 삭제 완료')
 
-        console.log('   4/4 창고 삭제 중...')
-        const { error: e4 } = await supabase.from('warehouses').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+        console.log('   6/6 창고 삭제 중...')
+        const { error: e4 } = await supabase.from('warehouses').delete().eq('company_id', cid)
         if (e4) console.error('   ❌ 창고 삭제 실패:', e4.message)
         else console.log('   ✅ 창고 삭제 완료')
 
@@ -491,12 +553,12 @@ export default function UploadPage() {
       } else {
         // 재고만 삭제
         console.log('   1/2 트랜잭션 삭제 중...')
-        const { error: e1 } = await supabase.from('transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+        const { error: e1 } = await supabase.from('transactions').delete().eq('company_id', cid)
         if (e1) console.error('   ❌ 트랜잭션 삭제 실패:', e1.message)
         else console.log('   ✅ 트랜잭션 삭제 완료')
 
         console.log('   2/2 재고 삭제 중...')
-        const { error: e2 } = await supabase.from('inventory').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+        const { error: e2 } = await supabase.from('inventory').delete().eq('company_id', cid)
         if (e2) console.error('   ❌ 재고 삭제 실패:', e2.message)
         else console.log('   ✅ 재고 삭제 완료')
 
@@ -548,7 +610,7 @@ export default function UploadPage() {
     try {
       // 창고 목록 가져오기 (업로드용)
       console.log('🏭 [진행] 창고 목록 조회...')
-      const { data: warehouseData, error: warehouseError } = await supabase.from('warehouses').select('*')
+      const { data: warehouseData, error: warehouseError } = await supabase.from('warehouses').select('*').eq('company_id', profile?.company_id || '')
 
       if (warehouseError) {
         console.error('❌ [에러] 창고 목록 조회 실패:', warehouseError.message)
@@ -568,6 +630,7 @@ export default function UploadPage() {
           .from('products')
           .select('id')
           .eq('product_code', item.product_code)
+          .eq('company_id', profile?.company_id || '')
           .single()
 
         if (findError && findError.code !== 'PGRST116') {
@@ -589,7 +652,9 @@ export default function UploadPage() {
               product_name: item.product_name,
               product_code: item.product_code,
               version: '일반',
-              unit_cost: 0
+              unit_cost: item.unit_cost,
+              is_active: true,
+              company_id: profile?.company_id
             }])
             .select('id')
             .single()
@@ -619,7 +684,7 @@ export default function UploadPage() {
             console.log(`   🏭 창고 "${inv.warehouse_name}" 없음 → 자동 생성 중...`)
             const { data: newWarehouse, error: warehouseCreateError } = await supabase
               .from('warehouses')
-              .insert([{ name: inv.warehouse_name }])
+              .insert([{ name: inv.warehouse_name, company_id: profile?.company_id }])
               .select('id')
               .single()
 
@@ -680,7 +745,8 @@ export default function UploadPage() {
                 product_id: productId,
                 warehouse_id: warehouseId,
                 quantity: inv.quantity,
-                lot_number: item.lot_number
+                lot_number: item.lot_number,
+                company_id: profile?.company_id
               }])
 
             if (insertError) {
@@ -706,6 +772,19 @@ export default function UploadPage() {
       console.log(`   - 업데이트: ${inventoryUpdated}개`)
       console.log(`   - 스킵 (창고 매핑 실패): ${inventorySkipped}개`)
       console.log('='.repeat(50))
+
+      // 업로드 완료 후 임박 상품 자동 체크 및 이메일 발송
+      fetch('/api/check-expiry-alert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company_id: profile?.company_id })
+      }).then(res => res.json()).then(result => {
+        if (result.sent) {
+          console.log(`📧 임박 알림 자동 발송 완료: ${result.recipients?.join(', ')}`)
+        } else {
+          console.log('📧 임박 알림 없음:', result.reason)
+        }
+      }).catch(err => console.error('📧 임박 알림 발송 실패:', err))
 
       alert(`업로드 완료!\n\n제품: 신규 ${productCreated}개, 기존 ${productExisted}개\n재고: 신규 ${inventoryCreated}개, 업데이트 ${inventoryUpdated}개`)
       setParsedData([])
@@ -737,17 +816,16 @@ export default function UploadPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
+    <>
+      <Navbar />
+      <div className="min-h-screen bg-slate-50 pt-20 p-8">
       <div className="max-w-4xl mx-auto">
         {/* 헤더 */}
         <div className="mb-8">
-          <Link href="/" className="text-blue-600 hover:underline mb-2 inline-block">
-            ← 대시보드로
-          </Link>
           <div className="flex justify-between items-start">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">엑셀 업로드</h1>
-              <p className="text-gray-600 mt-2">기존 재고 데이터를 한번에 업로드하세요</p>
+              <h1 className="text-2xl font-bold text-gray-900">엑셀 업로드</h1>
+              <p className="text-gray-500 mt-1">기존 재고 데이터를 한번에 업로드하세요</p>
             </div>
             <button
               onClick={() => setShowDeleteModal(true)}
@@ -878,17 +956,24 @@ export default function UploadPage() {
             <span className="text-sm font-medium">파일 선택</span>
           </div>
           <div className="w-8 h-0.5 bg-gray-200" />
+          <div className={`flex items-center gap-2 ${uploadStep === 'sheet' ? 'text-blue-600' : 'text-gray-400'}`}>
+            <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+              uploadStep === 'sheet' ? 'bg-blue-600 text-white' : 'bg-gray-200'
+            }`}>2</span>
+            <span className="text-sm font-medium">시트 선택</span>
+          </div>
+          <div className="w-8 h-0.5 bg-gray-200" />
           <div className={`flex items-center gap-2 ${uploadStep === 'mapping' ? 'text-blue-600' : 'text-gray-400'}`}>
             <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
               uploadStep === 'mapping' ? 'bg-blue-600 text-white' : 'bg-gray-200'
-            }`}>2</span>
+            }`}>3</span>
             <span className="text-sm font-medium">컬럼 매핑</span>
           </div>
           <div className="w-8 h-0.5 bg-gray-200" />
           <div className={`flex items-center gap-2 ${uploadStep === 'preview' ? 'text-blue-600' : 'text-gray-400'}`}>
             <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
               uploadStep === 'preview' ? 'bg-blue-600 text-white' : 'bg-gray-200'
-            }`}>3</span>
+            }`}>4</span>
             <span className="text-sm font-medium">확인 및 업로드</span>
           </div>
         </div>
@@ -947,7 +1032,73 @@ export default function UploadPage() {
           </div>
         )}
 
-        {/* 2단계: 컬럼 매핑 */}
+        {/* 2단계: 시트 선택 */}
+        {uploadStep === 'sheet' && (
+          <div className="bg-white rounded-lg shadow p-6 mb-8">
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <h2 className="text-xl font-semibold">시트 선택</h2>
+                <p className="text-gray-600 text-sm mt-1">
+                  업로드할 시트를 선택하세요. 필요 없는 시트는 체크를 해제하세요.
+                </p>
+              </div>
+              <button
+                onClick={() => { setUploadStep('file'); setAllSheets([]); setSelectedSheets([]); setFileName('') }}
+                className="text-gray-500 hover:text-gray-700 text-sm"
+              >
+                다른 파일 선택
+              </button>
+            </div>
+
+            <div className="space-y-2 mb-6">
+              {allSheets.map((sheet) => (
+                <label
+                  key={sheet.name}
+                  className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition ${
+                    selectedSheets.includes(sheet.name)
+                      ? 'border-blue-400 bg-blue-50'
+                      : 'border-gray-200 bg-gray-50 opacity-60'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedSheets.includes(sheet.name)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedSheets(prev => [...prev, sheet.name])
+                      } else {
+                        setSelectedSheets(prev => prev.filter(s => s !== sheet.name))
+                      }
+                    }}
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <div className="flex-1">
+                    <p className="font-medium text-gray-900">{sheet.name}</p>
+                    <p className="text-sm text-gray-500">{sheet.rowCount}개 행</p>
+                  </div>
+                  {sheet.rowCount === 0 && (
+                    <span className="text-xs text-orange-500 bg-orange-50 px-2 py-1 rounded">데이터 없음</span>
+                  )}
+                </label>
+              ))}
+            </div>
+
+            <div className="flex justify-between items-center">
+              <p className="text-sm text-gray-500">
+                {selectedSheets.length}개 시트 선택됨
+              </p>
+              <button
+                onClick={proceedFromSheetSelection}
+                disabled={selectedSheets.length === 0}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
+              >
+                다음: 컬럼 매핑
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 3단계: 컬럼 매핑 */}
         {uploadStep === 'mapping' && (
           <div className="bg-white rounded-lg shadow p-6 mb-8">
             <div className="flex justify-between items-start mb-6">
@@ -959,15 +1110,14 @@ export default function UploadPage() {
               </div>
               <button
                 onClick={() => {
-                  setUploadStep('file')
+                  setUploadStep('sheet')
                   setRawData([])
                   setDetectedColumns([])
                   setDetectedWarehouses([])
-                  setFileName('')
                 }}
                 className="text-gray-500 hover:text-gray-700 text-sm"
               >
-                다른 파일 선택
+                ← 시트 선택으로
               </button>
             </div>
 
@@ -1225,5 +1375,6 @@ export default function UploadPage() {
         )}
       </div>
     </div>
+    </>
   )
 }

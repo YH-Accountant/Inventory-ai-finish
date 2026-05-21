@@ -10,6 +10,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
+  const [companyName, setCompanyName] = useState('')
   const [role, setRole] = useState<'본사' | '창고'>('창고')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -33,20 +34,72 @@ export default function LoginPage() {
       }
     } else {
       // 회원가입
-      const { error } = await supabase.auth.signUp({
+      if (!companyName.trim()) {
+        setError('회사명을 입력해주세요.')
+        setLoading(false)
+        return
+      }
+
+      // 1. 동일 회사명 있으면 합류, 없으면 새로 생성
+      let companyId: string
+
+      const { data: existingCompany } = await supabase
+        .from('companies')
+        .select('id')
+        .eq('name', companyName.trim())
+        .single()
+
+      if (existingCompany) {
+        // 기존 회사에 합류
+        companyId = existingCompany.id
+      } else {
+        // 새 회사 생성
+        const { data: newCompany, error: companyError } = await supabase
+          .from('companies')
+          .insert([{ name: companyName.trim() }])
+          .select('id')
+          .single()
+
+        if (companyError || !newCompany) {
+          setError('회사 생성 실패: ' + companyError?.message)
+          setLoading(false)
+          return
+        }
+        companyId = newCompany.id
+      }
+
+      const companyData = { id: companyId }
+
+      // 2. 회원가입 (company_id 포함)
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: {
             name,
-            role
+            role,
+            company_id: companyData.id,
+            company_name: companyName.trim()
           }
         }
       })
 
-      if (error) {
-        setError(error.message)
+      if (signUpError) {
+        setError(signUpError.message)
+        // 회원가입 실패 시 생성된 회사 삭제
+        await supabase.from('companies').delete().eq('id', companyData.id)
       } else {
+        // 3. profiles 테이블에 company_id 직접 저장 (trigger가 누락하는 경우 대비)
+        if (signUpData.user) {
+          await supabase.from('profiles').upsert({
+            id: signUpData.user.id,
+            email,
+            name,
+            role,
+            company_id: companyData.id,
+            onboarding_completed: false
+          })
+        }
         router.push('/')
       }
     }
@@ -67,6 +120,19 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {!isLogin && (
             <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  회사명 *
+                </label>
+                <input
+                  type="text"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  placeholder="(주)홍길동컴퍼니"
+                  className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                />
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   이름

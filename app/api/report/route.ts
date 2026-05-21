@@ -259,6 +259,49 @@ export async function POST(request: Request) {
 
     console.log('📊 [DEBUG] 임박/만료 상품:', expiringProducts.length, '개')
 
+    // 제품별 이번 달 출고량 집계
+    const outboundByProduct: Record<string, number> = {}
+    outbound.forEach(t => {
+      const name = t.product_name || '알수없음'
+      outboundByProduct[name] = (outboundByProduct[name] || 0) + t.quantity
+    })
+
+    // 출고량 상위 제품 정렬
+    const topOutboundProducts = Object.entries(outboundByProduct)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+
+    // 현재 재고 (제품별 합계)
+    const currentStockByProduct: Record<string, number> = {}
+    ;(inventory || []).forEach(i => {
+      const name = i.product_name || '알수없음'
+      currentStockByProduct[name] = (currentStockByProduct[name] || 0) + i.quantity
+    })
+
+    // 이번 달 경과 일수 (발주 필요 여부 계산용)
+    const daysElapsed = Math.max(1, today.getDate())
+    const dailyOutboundRate: Record<string, number> = {}
+    topOutboundProducts.forEach(([name, qty]) => {
+      dailyOutboundRate[name] = qty / daysElapsed
+    })
+
+    // 재고 소진 예상일 계산 (현재고 ÷ 일평균출고)
+    const stockRunoutDays: { name: string; outbound: number; stock: number; daysLeft: number; needOrder: boolean }[] = []
+    topOutboundProducts.forEach(([name, outboundQty]) => {
+      const stock = currentStockByProduct[name] || 0
+      const dailyRate = dailyOutboundRate[name]
+      const daysLeft = dailyRate > 0 ? Math.floor(stock / dailyRate) : 999
+      stockRunoutDays.push({
+        name,
+        outbound: outboundQty,
+        stock,
+        daysLeft,
+        needOrder: daysLeft < 30  // 30일 이하면 발주 권고
+      })
+    })
+
+    const orderRecommendations = stockRunoutDays.filter(p => p.needOrder)
+
     console.log('📊 [AI 리포트] 데이터 수집 완료, AI 분석 시작...')
 
     const prompt = `당신은 재고관리 전문가입니다. 아래 데이터를 분석하여 한국어로 간결한 리포트를 작성해주세요.
@@ -276,6 +319,18 @@ ${inventorySummary.slice(0, 10).map(i => `- ${i.제품}: ${i.창고} ${i.수량}
 - 총 출고: ${totalOutbound.toLocaleString()}개
 - 채널별: ${Object.entries(outboundByChannel).map(([k, v]) => `${k}: ${v.toLocaleString()}개`).join(', ') || '데이터 없음'}
 
+### 제품별 출고량 TOP (${monthLabel})
+${topOutboundProducts.map(([name, qty]) => {
+  const stock = currentStockByProduct[name] || 0
+  const info = stockRunoutDays.find(p => p.name === name)
+  return `- ${name}: 출고 ${qty.toLocaleString()}개 / 현재고 ${stock.toLocaleString()}개 / 소진예상 ${info && info.daysLeft < 999 ? `${info.daysLeft}일` : '여유'}`
+}).join('\n') || '데이터 없음'}
+
+### 발주/추가생산 권고 대상 (재고 소진 30일 이하)
+${orderRecommendations.length > 0
+  ? orderRecommendations.map(p => `- ${p.name}: 현재고 ${p.stock.toLocaleString()}개, 일평균출고 ${p.needOrder ? (p.outbound / daysElapsed).toFixed(1) : '-'}개, 소진예상 ${p.daysLeft}일`).join('\n')
+  : '없음 (모든 주요 제품 재고 충분)'}
+
 ### 출고 없는 날 (${monthLabel}, 평일 기준 - 주말 제외)
 - 출고 없는 날짜: ${noOutboundDays.length > 0 ? noOutboundDays.join(', ') : '없음'}
 - 출고 없는 날 수: ${noOutboundDays.length}일
@@ -285,23 +340,27 @@ ${expiringProducts.length > 0 ? expiringProducts.slice(0, 10).map(p =>
   `- [${p.status}] ${p.name} (LOT: ${p.lot}, ${p.warehouse}) ${p.qty}개 - ${p.daysLeft <= 0 ? '이미 만료됨' : `${p.daysLeft}일 남음`}`
 ).join('\n') : '없음'}
 
-## 리포트 형식 (마크다운) - 추천액션 섹션 없이, 각 섹션에 권고사항 포함
+## 리포트 형식 (마크다운) - 각 섹션에 권고사항 포함
 
 ### 요약
 (2-3줄로 핵심 현황)
 
 ### 출고 이상 감지
 - ${monthLabel} 출고 기록을 분석했습니다. (주말 제외)
-- 출고 없는 날이 있으면: 해당 날짜를 모두 나열하고 (예: ${noOutboundDays.slice(0, 3).join(', ')} 등)
-- 바로 아래에 "→ 권고: 출고 기록 누락 여부 확인 필요" 형태로 권고사항 작성
+- 출고 없는 날이 있으면: 해당 날짜를 모두 나열하고 바로 아래에 "→ 권고: 출고 기록 누락 여부 확인 필요" 작성
 - 출고 없는 날이 없으면: "정상 - 모든 평일에 출고 기록이 있습니다."
+
+### 발주/추가생산 권고
+- 발주 권고 대상이 있으면: 제품명, 현재고, 소진 예상일 나열 후 "→ 권고: [제품명] 추가 발주(생산) 검토 필요. 현재 재고로 약 N일치 물량만 남음"
+- 발주 권고 대상이 없으면: "정상 - 주요 제품 재고 30일 이상 여유"
+- 출고 데이터가 없으면: "데이터 부족 - 출고 기록 누적 후 분석 가능"
 
 ### 유통기한 관리
 - 임박 상품이 있으면: 상품명과 남은 기한 나열 후 "→ 권고: 떨이 판매 또는 증정용 활용 검토"
 - 만료 상품이 있으면: 상품명 나열 후 "→ 권고: 폐기처분 및 재고자산 감액 회계처리 필요"
 - 해당사항 없으면: "정상 - 임박/만료 상품 없음"
 
-중요: "추천 액션" 섹션을 별도로 만들지 마세요. 모든 권고사항은 해당 섹션 내에 "→ 권고:" 형태로 즉시 작성하세요.
+중요: 모든 권고사항은 해당 섹션 내에 "→ 권고:" 형태로 즉시 작성하세요.
 간결하게 작성하세요. 데이터가 부족하면 "데이터 부족"이라고 명시하세요.`
 
     const response = await openai.chat.completions.create({
@@ -311,7 +370,7 @@ ${expiringProducts.length > 0 ? expiringProducts.slice(0, 10).map(p =>
         { role: 'user', content: prompt }
       ],
       temperature: 0.3,
-      max_tokens: 800
+      max_tokens: 1000
     })
 
     const report = response.choices[0]?.message?.content || '리포트 생성 실패'
@@ -328,7 +387,8 @@ ${expiringProducts.length > 0 ? expiringProducts.slice(0, 10).map(p =>
         productCount: new Set(inventory?.map(i => i.product_name)).size,
         monthLabel,
         noOutboundDaysCount: noOutboundDays.length,
-        expiringCount: expiringProducts.length
+        expiringCount: expiringProducts.length,
+        orderRecommendationCount: orderRecommendations.length
       }
     })
   } catch (error) {

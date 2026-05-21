@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/app/contexts/AuthContext'
-import Link from 'next/link'
+import Navbar from '@/app/components/Navbar'
 
-// 타입 정의
+// ── 타입 ────────────────────────────────────────────────
 interface Product {
   id: string
   product_group: string
@@ -15,50 +15,6 @@ interface Product {
   unit_cost: number
   channel: string | null
   shelf_life_months: number | null
-}
-
-interface ExpiringLot {
-  product: Product
-  lot_number: string
-  daysRemaining: number
-  quantity: number
-  status: 'warning' | 'expired'
-}
-
-// 로트번호에서 제조일자 추출 (YYMMDD-NN → Date)
-function parseLotNumber(lotNumber: string | null): Date | null {
-  if (!lotNumber || lotNumber.length < 6) return null
-
-  const yy = parseInt(lotNumber.substring(0, 2))
-  const mm = parseInt(lotNumber.substring(2, 4)) - 1 // 월은 0부터 시작
-  const dd = parseInt(lotNumber.substring(4, 6))
-
-  if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null
-
-  const year = 2000 + yy
-  return new Date(year, mm, dd)
-}
-
-// AI를 통해 비소모품 분류 (API 호출)
-async function classifyNonPerishableProducts(productNames: string[]): Promise<Set<string>> {
-  if (productNames.length === 0) return new Set()
-
-  try {
-    const response = await fetch('/api/classify-products', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ productNames })
-    })
-
-    if (response.ok) {
-      const data = await response.json()
-      return new Set(data.nonPerishable || [])
-    }
-  } catch (error) {
-    console.error('제품 분류 API 에러:', error)
-  }
-
-  return new Set()
 }
 
 interface Warehouse {
@@ -80,576 +36,507 @@ interface InventoryItem {
 interface Transaction {
   id: string
   product_id: string
-  warehouse_id: string
   type: string
   quantity: number
   channel: string | null
   note: string | null
-  recorded_by: string | null
   created_at: string
   products: Product
   warehouses: Warehouse
 }
 
+interface AiBriefing {
+  urgentProduct: string | null
+  urgentDays: number | null
+  expiryLoss: number
+  bestChannel: string | null
+  bestMargin: number
+}
+
+// ── 유틸 ────────────────────────────────────────────────
+function parseLotNumber(lot: string | null): Date | null {
+  if (!lot || lot.length < 6) return null
+  const yy = parseInt(lot.substring(0, 2))
+  const mm = parseInt(lot.substring(2, 4)) - 1
+  const dd = parseInt(lot.substring(4, 6))
+  if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null
+  return new Date(2000 + yy, mm, dd)
+}
+
+const RECENT_COMMANDS_KEY = 'inventory-ai-recent-commands'
+function getRecentCommands(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_COMMANDS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+function saveRecentCommand(cmd: string) {
+  const prev = getRecentCommands().filter(c => c !== cmd)
+  const next = [cmd, ...prev].slice(0, 5)
+  localStorage.setItem(RECENT_COMMANDS_KEY, JSON.stringify(next))
+}
+
+// ── 컴포넌트 ────────────────────────────────────────────
 export default function Home() {
-  const { profile, signOut } = useAuth()
+  const { profile } = useAuth()
+
   const [products, setProducts] = useState<Product[]>([])
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [inventory, setInventory] = useState<InventoryItem[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [todayCount, setTodayCount] = useState(0)
-  const [expiringLots, setExpiringLots] = useState<ExpiringLot[]>([])
+  const [expiringCount, setExpiringCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [selectedWarehouse, setSelectedWarehouse] = useState('전체')
-  const [aiReport, setAiReport] = useState<string | null>(null)
-  const [reportLoading, setReportLoading] = useState(false)
-  const [showReport, setShowReport] = useState(false)
-  const [reportGeneratedAt, setReportGeneratedAt] = useState<string | null>(null)
+  const [inventorySearch, setInventorySearch] = useState('')
+  const [briefing, setBriefing] = useState<AiBriefing | null>(null)
 
-  // localStorage에서 리포트 불러오기
-  useEffect(() => {
-    const savedReport = localStorage.getItem('ai_report')
-    const savedTime = localStorage.getItem('ai_report_time')
-    if (savedReport) {
-      setAiReport(savedReport)
-      setShowReport(true)
-      setReportGeneratedAt(savedTime)
-      console.log('📊 [리포트] localStorage에서 불러옴')
-    }
-  }, [])
+  // Command bar
+  const [command, setCommand] = useState('')
+  const [recentCmds, setRecentCmds] = useState<string[]>([])
+  const [toast, setToast] = useState<string | null>(null)
+  const commandInputRef = useRef<HTMLInputElement>(null)
 
-  // 데이터 불러오기 + 실시간 구독
+  // 임박 알림
   useEffect(() => {
+    if (!profile?.company_id) return
+    checkExpiryAlert(profile.company_id)
+  }, [profile?.company_id])
+
+  useEffect(() => {
+    if (!profile?.company_id) return
     fetchData()
+    setRecentCmds(getRecentCommands())
+  }, [profile?.company_id])
 
-    // 실시간 구독: inventory 테이블 변경 감지
-    const channel = supabase
-      .channel('realtime-inventory')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'inventory'
-      }, () => {
-        fetchData()
-      })
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'transactions'
-      }, () => {
-        fetchData()
-      })
+  useEffect(() => {
+    if (!profile?.company_id) return
+    const ch = supabase
+      .channel('realtime-home')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, fetchData)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, fetchData)
       .subscribe()
+    return () => { supabase.removeChannel(ch) }
+  }, [profile?.company_id])
 
-    return () => {
-      supabase.removeChannel(channel)
+  async function checkExpiryAlert(companyId: string) {
+    const { data } = await supabase.from('companies').select('last_expiry_alert_at').eq('id', companyId).single()
+    const lastSent = data?.last_expiry_alert_at
+    if (lastSent && (new Date().getTime() - new Date(lastSent).getTime()) < 24 * 60 * 60 * 1000) return
+    const res = await fetch('/api/check-expiry-alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_id: companyId })
+    })
+    const result = await res.json()
+    if (result.sent) {
+      await supabase.from('companies').update({ last_expiry_alert_at: new Date().toISOString() }).eq('id', companyId)
     }
-  }, [])
+  }
 
   async function fetchData() {
+    if (!profile?.company_id) return
     setLoading(true)
+    const cid = profile.company_id
 
-    // 제품 목록
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const [
+      { data: productsData },
+      { data: warehousesData },
+      { data: inventoryData },
+      { data: txData },
+      { count: todayTxCount },
+      { data: companyData },
+      { data: plansData }
+    ] = await Promise.all([
+      supabase.from('products').select('*').eq('company_id', cid).eq('is_active', true),
+      supabase.from('warehouses').select('*').eq('company_id', cid),
+      supabase.from('inventory').select('*, products(*), warehouses(*)').eq('company_id', cid),
+      supabase.from('transactions').select('*, products(*), warehouses(*)').eq('company_id', cid).order('created_at', { ascending: false }).limit(10),
+      supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', cid).gte('created_at', new Date(new Date().setHours(0, 0, 0, 0)).toISOString()),
+      supabase.from('companies').select('default_shelf_life_months, shelf_life_warning_ratio').eq('id', cid).single(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      supabase.from('product_plans').select('name, channel, selling_price, commission_rate, event_discount_rate, assembly_cost, plan_items(quantity, products(unit_cost))').eq('company_id', cid) as any
+    ])
 
-    // 창고 목록
-    const { data: warehousesData } = await supabase
-      .from('warehouses')
-      .select('*')
-
-    // 재고 현황 (제품, 창고 정보 포함)
-    const { data: inventoryData } = await supabase
-      .from('inventory')
-      .select(`
-        *,
-        products (*),
-        warehouses (*)
-      `)
-
-    // 최근 입출고 기록
-    const { data: transactionsData } = await supabase
-      .from('transactions')
-      .select(`
-        *,
-        products (*),
-        warehouses (*)
-      `)
-      .order('created_at', { ascending: false })
-      .limit(10)
-
-    // 오늘 입출고 건수
-    const todayStart = new Date()
-    todayStart.setHours(0, 0, 0, 0)
-    const { count: todayTxCount } = await supabase
-      .from('transactions')
-      .select('*', { count: 'exact', head: true })
-      .gte('created_at', todayStart.toISOString())
-
+    const inv = (inventoryData || []) as InventoryItem[]
+    const txs = (txData || []) as Transaction[]
     setProducts(productsData || [])
     setWarehouses(warehousesData || [])
-    setInventory(inventoryData || [])
-    setTransactions(transactionsData || [])
+    setInventory(inv)
+    setTransactions(txs)
     setTodayCount(todayTxCount || 0)
 
-    // 유통기한 임박 로트 계산
-    const expiring: ExpiringLot[] = []
-    if (inventoryData) {
-      // AI로 비소모품 분류 (한 번만 호출)
-      const uniqueProductNames = [...new Set(
-        inventoryData.map((item: InventoryItem) => item.products?.product_name).filter(Boolean)
-      )] as string[]
-      const nonPerishableSet = await classifyNonPerishableProducts(uniqueProductNames)
+    const shelfLife = companyData?.default_shelf_life_months || 24
+    const warningRatio = companyData?.shelf_life_warning_ratio || 0.25
+    const today = new Date()
 
-      inventoryData.forEach((item: InventoryItem) => {
-        if (!item.lot_number || !item.products) return
+    // 임박 로트 계산
+    let expCount = 0
+    let expiryLoss = 0
+    inv.forEach(item => {
+      if (!item.lot_number || !item.products) return
+      const mfg = parseLotNumber(item.lot_number)
+      if (!mfg) return
+      const sl = item.products.shelf_life_months || shelfLife
+      const expiry = new Date(mfg)
+      expiry.setMonth(expiry.getMonth() + sl)
+      const daysLeft = Math.ceil((expiry.getTime() - today.getTime()) / 86400000)
+      const threshold = sl * 30 * warningRatio
+      if (daysLeft <= threshold) {
+        expCount++
+        expiryLoss += item.quantity * (item.products.unit_cost || 0)
+      }
+    })
+    setExpiringCount(expCount)
 
-        // AI가 분류한 비소모품은 유통기한 체크 안함
-        const productName = item.products.product_name || ''
-        if (nonPerishableSet.has(productName)) return
+    // 발주 긴급 계산 (30일 소진율)
+    const thirtyDaysAgo = new Date(today.getTime() - 30 * 86400000)
+    const stockByProduct: Record<string, { name: string; qty: number }> = {}
+    inv.forEach(item => {
+      const k = item.products?.product_name
+      if (!k) return
+      if (!stockByProduct[k]) stockByProduct[k] = { name: k, qty: 0 }
+      stockByProduct[k].qty += item.quantity
+    })
 
-        const mfgDate = parseLotNumber(item.lot_number)
-        if (!mfgDate) return
+    const [{ data: allTx }] = await Promise.all([
+      supabase.from('transactions').select('type, quantity, products(product_name)').eq('company_id', cid).eq('type', '출고').gte('created_at', thirtyDaysAgo.toISOString())
+    ])
+    const outboundByProduct: Record<string, number> = {}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(allTx || []).forEach((t: any) => {
+      const pname = t.products?.product_name
+      if (!pname) return
+      outboundByProduct[pname] = (outboundByProduct[pname] || 0) + t.quantity
+    })
 
-        const shelfLifeMonths = item.products.shelf_life_months || 24
-        const expiryDate = new Date(mfgDate)
-        expiryDate.setMonth(expiryDate.getMonth() + shelfLifeMonths)
+    let urgentProduct: string | null = null
+    let urgentDays: number | null = null
+    Object.entries(stockByProduct).forEach(([, { name, qty }]) => {
+      const out30 = outboundByProduct[name] || 0
+      if (out30 === 0) return
+      const days = Math.floor(qty / (out30 / 30))
+      if (days < 30 && (urgentDays === null || days < urgentDays)) {
+        urgentDays = days
+        urgentProduct = name
+      }
+    })
 
-        const today = new Date()
-        const totalDays = shelfLifeMonths * 30
-        const remainingMs = expiryDate.getTime() - today.getTime()
-        const daysRemaining = Math.ceil(remainingMs / (1000 * 60 * 60 * 24))
+    // 최고 마진 채널
+    let bestChannel: string | null = null
+    let bestMargin = -Infinity
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(plansData || []).forEach((plan: any) => {
+      if (!plan.selling_price) return
+      const net = plan.selling_price * (1 - (plan.commission_rate || 0) - (plan.event_discount_rate || 0))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bom = (plan.plan_items || []).reduce((s: number, i: any) => s + (i.quantity || 0) * (i.products?.unit_cost || 0), 0)
+      const cost = bom + (plan.assembly_cost || 0)
+      if (cost === 0) return
+      const margin = (net - cost) / plan.selling_price
+      if (margin > bestMargin) { bestMargin = margin; bestChannel = plan.channel || plan.name }
+    })
 
-        // 25% 임계값
-        const warningThresholdDays = totalDays * 0.25
-
-        if (daysRemaining <= 0) {
-          expiring.push({
-            product: item.products,
-            lot_number: item.lot_number,
-            daysRemaining,
-            quantity: item.quantity,
-            status: 'expired'
-          })
-        } else if (daysRemaining <= warningThresholdDays) {
-          expiring.push({
-            product: item.products,
-            lot_number: item.lot_number,
-            daysRemaining,
-            quantity: item.quantity,
-            status: 'warning'
-          })
-        }
-      })
-    }
-    // 남은 일수 오름차순 정렬
-    expiring.sort((a, b) => a.daysRemaining - b.daysRemaining)
-    setExpiringLots(expiring)
+    setBriefing({
+      urgentProduct,
+      urgentDays,
+      expiryLoss,
+      bestChannel,
+      bestMargin: bestMargin === -Infinity ? 0 : bestMargin
+    })
 
     setLoading(false)
   }
 
-  // AI 리포트 생성
-  async function generateReport() {
-    setReportLoading(true)
-    setShowReport(true)
-    setAiReport(null)
+  // ── Command bar 제출 ─────────────────────────────────
+  function handleCommandSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const cmd = command.trim()
+    if (!cmd) return
 
-    try {
-      // 리포트용: 이번 달 전체 트랜잭션 조회 (대시보드의 10건 제한과 별도)
-      const monthStart = new Date()
-      monthStart.setDate(1)
-      monthStart.setHours(0, 0, 0, 0)
+    saveRecentCommand(cmd)
+    setRecentCmds(getRecentCommands())
+    setCommand('')
 
-      const { data: allMonthTransactions } = await supabase
-        .from('transactions')
-        .select(`*, products (*), warehouses (*)`)
-        .gte('created_at', monthStart.toISOString())
-        .order('created_at', { ascending: false })
+    // Toast 표시
+    setToast('🤖 AI가 처리 중입니다...')
+    setTimeout(() => setToast(null), 3000)
 
-      // 클라이언트에서 가져온 데이터를 API에 전달 (RLS 우회)
-      const response = await fetch('/api/report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          inventory: inventory.map(i => ({
-            quantity: i.quantity,
-            lot_number: i.lot_number,
-            product_name: i.products?.product_name,
-            product_code: i.products?.product_code,
-            product_group: i.products?.product_group,
-            shelf_life_months: i.products?.shelf_life_months,
-            warehouse_name: i.warehouses?.name
-          })),
-          transactions: (allMonthTransactions || []).map(t => ({
-            type: t.type,
-            quantity: t.quantity,
-            channel: t.channel,
-            created_at: t.created_at,
-            product_name: t.products?.product_name
-          })),
-          warehouses: warehouses.map(w => ({ name: w.name })),
-          // expiringLots 필드명 변환 (API 형식에 맞춤)
-          expiringLots: expiringLots.map(lot => ({
-            productName: lot.product?.product_name,
-            lotNumber: lot.lot_number,
-            quantity: lot.quantity,
-            daysLeft: lot.daysRemaining,
-            status: lot.status,
-            warehouseName: inventory.find(i =>
-              i.products?.id === lot.product?.id && i.lot_number === lot.lot_number
-            )?.warehouses?.name || '알수없음'
-          }))
-        })
-      })
-      const data = await response.json()
-
-      if (data.error) {
-        setAiReport('리포트 생성 중 오류가 발생했습니다.')
-      } else {
-        setAiReport(data.report)
-        // localStorage에 저장
-        const now = new Date().toLocaleString('ko-KR')
-        localStorage.setItem('ai_report', data.report)
-        localStorage.setItem('ai_report_time', now)
-        setReportGeneratedAt(now)
-        console.log('📊 [리포트] localStorage에 저장됨')
-      }
-    } catch (error) {
-      console.error('AI 리포트 에러:', error)
-      setAiReport('리포트 생성 중 오류가 발생했습니다.')
-    } finally {
-      setReportLoading(false)
-    }
+    // ChatWidget 열기 + 메시지 전송
+    window.dispatchEvent(new CustomEvent('open-chat', { detail: { message: cmd } }))
   }
+
+  // ── 재고 그룹핑 ─────────────────────────────────────
+  const inventoryGroups = Object.values(
+    inventory.reduce((acc, item) => {
+      const pid = item.product_id
+      if (!acc[pid]) acc[pid] = { product: item.products, items: [] }
+      acc[pid].items.push(item)
+      return acc
+    }, {} as Record<string, { product: Product; items: InventoryItem[] }>)
+  ).filter(g => {
+    const matchW = selectedWarehouse === '전체' || g.items.some(i => i.warehouses?.name === selectedWarehouse)
+    const matchS = !inventorySearch ||
+      g.product?.product_name?.toLowerCase().includes(inventorySearch.toLowerCase()) ||
+      g.product?.product_code?.toLowerCase().includes(inventorySearch.toLowerCase())
+    return matchW && matchS
+  })
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-xl">로딩 중...</p>
-      </div>
+      <>
+        <Navbar />
+        <div className="min-h-screen flex items-center justify-center pt-14 bg-slate-50">
+          <div className="flex flex-col items-center gap-3">
+            <svg className="animate-spin w-8 h-8 text-blue-500" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            <p className="text-gray-500 text-sm">데이터 불러오는 중...</p>
+          </div>
+        </div>
+      </>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* 헤더 */}
-        <header className="mb-8">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">📦 재고관리 AI</h1>
-              <p className="text-gray-600 mt-2">중소기업을 위한 간편한 재고관리 시스템</p>
+    <>
+      <Navbar />
+      <div className="min-h-screen bg-slate-50 pt-20">
+        <div className="max-w-7xl mx-auto px-6 py-8">
+
+          {/* ── KPI 카드 4개 ── */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">총 제품</p>
+              <p className="text-3xl font-bold text-gray-900">{products.length}</p>
+              <p className="text-xs text-gray-400 mt-1">개 등록됨</p>
             </div>
-            <div className="flex items-center gap-3">
-              <span className={`text-xs px-2 py-1 rounded-full ${
-                profile?.role === '본사'
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'bg-green-100 text-green-700'
-              }`}>
-                {profile?.role}
-              </span>
-              <span className="font-medium text-gray-900">{profile?.name}</span>
+            <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">창고</p>
+              <p className="text-3xl font-bold text-gray-900">{warehouses.length}</p>
+              <p className="text-xs text-gray-400 mt-1">개 운영 중</p>
+            </div>
+            <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">오늘 입출고</p>
+              <p className="text-3xl font-bold text-blue-600">{todayCount}</p>
+              <p className="text-xs text-gray-400 mt-1">건 처리됨</p>
+            </div>
+            <div className={`rounded-2xl shadow-sm p-5 border ${expiringCount > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-gray-100'}`}>
+              <p className={`text-xs font-semibold uppercase tracking-wide mb-2 ${expiringCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>유통기한 임박</p>
+              <p className={`text-3xl font-bold ${expiringCount > 0 ? 'text-red-600' : 'text-emerald-500'}`}>
+                {expiringCount > 0 ? expiringCount : '없음'}
+              </p>
+              <p className={`text-xs mt-1 ${expiringCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                {expiringCount > 0 ? '로트 주의 필요' : '정상'}
+              </p>
+            </div>
+          </div>
+
+          {/* ── AI 운영 브리핑 ── */}
+          {briefing && (
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl p-5 mb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-blue-600 font-bold text-sm">🤖 AI 운영 브리핑</span>
+                <span className="text-xs text-blue-400">{new Date().toLocaleDateString('ko-KR')} 기준</span>
+              </div>
+              <div className="flex flex-col gap-2">
+                {briefing.urgentProduct && briefing.urgentDays !== null ? (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-amber-500 font-bold">⚠️</span>
+                    <span className="text-gray-700">
+                      <span className="font-semibold text-gray-900">{briefing.urgentProduct}</span>
+                      {' '}재고 소진 예상 <span className="font-bold text-amber-600">D-{briefing.urgentDays}일</span>
+                      {' '}&mdash; 발주 검토 필요
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-emerald-500 font-bold">✅</span>
+                    <span className="text-gray-600">30일 이내 품절 예상 제품 없음</span>
+                  </div>
+                )}
+                {briefing.expiryLoss > 0 ? (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-red-500 font-bold">🔴</span>
+                    <span className="text-gray-700">
+                      폐기 예상 손실 <span className="font-bold text-red-600">{Math.round(briefing.expiryLoss / 10000).toLocaleString()}만원</span>
+                      {' '}&mdash; 임박/만료 재고 × 원가
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-emerald-500 font-bold">✅</span>
+                    <span className="text-gray-600">폐기 예상 손실 없음</span>
+                  </div>
+                )}
+                {briefing.bestChannel && briefing.bestMargin > 0 ? (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-blue-500 font-bold">💡</span>
+                    <span className="text-gray-700">
+                      최고 마진 채널 <span className="font-bold text-blue-700">{briefing.bestChannel}</span>
+                      {' '}<span className="text-blue-600">{(briefing.bestMargin * 100).toFixed(1)}%</span>
+                      {' '}&mdash; 기획세트 기준
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-gray-400">💡</span>
+                    <span className="text-gray-400">기획세트 원가 데이터 입력 후 마진 분석 가능</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── AI 커맨드 바 ── */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-5 mb-6 shadow-sm">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">💬 AI에게 바로 명령하세요</p>
+            <form onSubmit={handleCommandSubmit} className="flex gap-3">
+              <input
+                ref={commandInputRef}
+                type="text"
+                value={command}
+                onChange={e => setCommand(e.target.value)}
+                placeholder="예: 쿠션 축축 기획 300개 올리브영 출고해줘"
+                className="flex-1 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50"
+              />
               <button
-                onClick={signOut}
-                className="text-gray-500 hover:text-red-600 text-sm border px-3 py-1.5 rounded-lg hover:border-red-300 transition"
+                type="submit"
+                disabled={!command.trim()}
+                className="bg-blue-600 text-white px-5 py-3 rounded-xl text-sm font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
               >
-                로그아웃
+                전송
               </button>
-            </div>
-          </div>
-          <div className="flex gap-3 mt-4">
-            <Link
-              href="/upload"
-              className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition"
-            >
-              엑셀 업로드
-            </Link>
-            <Link
-              href="/products"
-              className="bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-700 transition"
-            >
-              제품 관리
-            </Link>
-            <Link
-              href="/transactions"
-              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition"
-            >
-              입출고
-            </Link>
-            <Link
-              href="/lots"
-              className="bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition"
-            >
-              로트 관리
-            </Link>
-          </div>
-        </header>
-
-        {/* 메인 컨텐츠 + 사이드바 레이아웃 */}
-        <div className="flex gap-6">
-          {/* 좌측 메인 컨텐츠 */}
-          <div className="flex-1 min-w-0">
-            {/* 요약 카드 */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-              <div className="bg-white rounded-lg shadow p-4">
-                <h3 className="text-sm font-medium text-gray-500">총 제품 수</h3>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{products.length}개</p>
-              </div>
-              <div className="bg-white rounded-lg shadow p-4">
-                <h3 className="text-sm font-medium text-gray-500">창고 수</h3>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{warehouses.length}개</p>
-              </div>
-              <div className="bg-white rounded-lg shadow p-4">
-                <h3 className="text-sm font-medium text-gray-500">오늘 입출고</h3>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{todayCount}건</p>
-              </div>
-            </div>
-
-            {/* 유통기한 임박 경고 */}
-            {expiringLots.length > 0 && (
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg shadow mb-6">
-                <div className="p-3 border-b border-yellow-200 flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <span className="text-yellow-600">⚠️</span>
-                    <h2 className="text-sm font-semibold text-yellow-800">
-                      유통기한 임박/만료 ({expiringLots.length}건)
-                    </h2>
-                  </div>
-                  <Link href="/lots" className="text-xs text-yellow-700 hover:underline">
-                    상세 →
-                  </Link>
-                </div>
-                <div className="p-3">
-                  <div className="space-y-2">
-                    {expiringLots.slice(0, 3).map((lot, idx) => (
-                      <div
-                        key={`${lot.product.id}_${lot.lot_number}_${idx}`}
-                        className={`flex items-center justify-between p-2 rounded-lg text-sm ${
-                          lot.status === 'expired' ? 'bg-red-100' : 'bg-yellow-100'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className={`px-1.5 py-0.5 text-xs font-medium rounded-full ${
-                            lot.status === 'expired' ? 'bg-red-200 text-red-700' : 'bg-yellow-200 text-yellow-700'
-                          }`}>
-                            {lot.status === 'expired' ? '만료' : '임박'}
-                          </span>
-                          <span className="font-medium text-gray-900">{lot.product.product_name}</span>
-                        </div>
-                        <span className={lot.status === 'expired' ? 'text-red-600' : 'text-yellow-600'}>
-                          {lot.daysRemaining <= 0 ? '만료' : `${lot.daysRemaining}일`}
-                        </span>
-                      </div>
-                    ))}
-                    {expiringLots.length > 3 && (
-                      <p className="text-center text-xs text-yellow-600">외 {expiringLots.length - 3}건</p>
-                    )}
-                  </div>
-                </div>
+            </form>
+            {recentCmds.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-3">
+                {recentCmds.map((cmd, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setCommand(cmd)}
+                    className="text-xs bg-slate-100 hover:bg-blue-50 hover:text-blue-600 text-gray-500 px-3 py-1.5 rounded-full transition"
+                  >
+                    {cmd}
+                  </button>
+                ))}
               </div>
             )}
+          </div>
 
-            {/* 재고 현황 - 탭 + 카드 */}
-            <div className="bg-white rounded-lg shadow mb-6">
-              <div className="p-4 border-b flex justify-between items-center">
-                <h2 className="text-lg font-semibold">재고 현황</h2>
-                <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          {/* ── 재고 현황 + 최근 입출고 ── */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+
+            {/* 재고 현황 */}
+            <div className="lg:col-span-3 bg-white rounded-2xl shadow-sm border border-gray-100">
+              <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+                <h2 className="text-base font-semibold text-gray-900 shrink-0">재고 현황</h2>
+                <input
+                  type="text"
+                  placeholder="제품명 검색..."
+                  value={inventorySearch}
+                  onChange={e => setInventorySearch(e.target.value)}
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-slate-50"
+                />
+                <div className="flex gap-1 bg-slate-100 rounded-lg p-1 shrink-0">
                   <button
                     onClick={() => setSelectedWarehouse('전체')}
-                    className={`px-3 py-1 rounded-md text-xs font-medium transition ${
-                      selectedWarehouse === '전체' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'
-                    }`}
+                    className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedWarehouse === '전체' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
                   >
                     전체
                   </button>
-                  {warehouses.map((w) => (
+                  {warehouses.map(w => (
                     <button
                       key={w.id}
                       onClick={() => setSelectedWarehouse(w.name)}
-                      className={`px-3 py-1 rounded-md text-xs font-medium transition ${
-                        selectedWarehouse === w.name ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedWarehouse === w.name ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
                     >
                       {w.name}
                     </button>
                   ))}
                 </div>
               </div>
-              <div className="p-4">
-                {inventory.length === 0 ? (
-                  <p className="text-gray-500 text-center py-4 text-sm">등록된 재고가 없습니다.</p>
+              <div className="p-5">
+                {inventoryGroups.length === 0 ? (
+                  <p className="text-gray-400 text-sm text-center py-8">등록된 재고가 없습니다.</p>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {Object.values(
-                      inventory.reduce((acc, item) => {
-                        const productId = item.product_id
-                        if (!acc[productId]) {
-                          acc[productId] = { product: item.products, items: [] }
-                        }
-                        acc[productId].items.push(item)
-                        return acc
-                      }, {} as Record<string, { product: Product; items: InventoryItem[] }>)
-                    )
-                      .filter((group) => {
-                        if (selectedWarehouse === '전체') return true
-                        return group.items.some(item => item.warehouses?.name === selectedWarehouse)
-                      })
-                      .map((group) => {
-                        const filteredItems = selectedWarehouse === '전체'
-                          ? group.items
-                          : group.items.filter(item => item.warehouses?.name === selectedWarehouse)
-                        const qty = filteredItems.reduce((sum, item) => sum + item.quantity, 0)
-
-                        return (
-                          <div key={group.product?.id} className="border rounded-lg p-3 hover:shadow-sm transition">
-                            <div className="flex justify-between items-center">
-                              <div>
-                                <h3 className="font-medium text-gray-900 text-sm">{group.product?.product_name}</h3>
-                                <p className="text-xs text-gray-500">{group.product?.product_code}</p>
-                              </div>
-                              <span className="text-base font-bold text-blue-600">{qty.toLocaleString()}개</span>
-                            </div>
-                          </div>
-                        )
-                      })}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* 최근 입출고 기록 */}
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-4 border-b">
-                <h2 className="text-lg font-semibold">최근 입출고 기록</h2>
-              </div>
-              <div className="p-4">
-                {transactions.length === 0 ? (
-                  <p className="text-gray-500 text-center py-4">
-                    입출고 기록이 없습니다.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {transactions.map((tx) => {
-                      // 이동 감지: type이 '이동'이거나, note에 [이동] 또는 [샘플(이동)] 포함
-                      const isTransfer = tx.type === '이동' || tx.note?.includes('[이동]') || tx.note?.includes('[샘플(이동)]')
-                      const displayType = isTransfer ? '이동' : tx.type
-
-                      // 이동인 경우 note에서 창고 정보 추출
-                      let transferInfo = ''
-                      if (isTransfer && tx.note) {
-                        const match = tx.note.match(/^(.+?) → (.+?)(?:\s*\(|$)/)
-                        if (match) {
-                          transferInfo = `${match[1]} → ${match[2]}`
-                        } else if (tx.note.includes('[이동]')) {
-                          transferInfo = tx.note.replace('[이동]', '').trim()
-                        } else {
-                          transferInfo = tx.note
-                        }
-                      }
-
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {inventoryGroups.map(group => {
+                      const filtered = selectedWarehouse === '전체'
+                        ? group.items
+                        : group.items.filter(i => i.warehouses?.name === selectedWarehouse)
+                      const qty = filtered.reduce((sum, i) => sum + i.quantity, 0)
                       return (
-                      <div key={tx.id} className="flex items-center justify-between border-b pb-3">
-                        <div className="flex items-center gap-3">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            isTransfer
-                              ? 'bg-blue-100 text-blue-800'
-                              : tx.type === '입고'
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'
-                          }`}>
-                            {displayType}
-                          </span>
+                        <div key={group.product?.id} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3 hover:border-blue-200 hover:bg-blue-50/30 transition">
                           <div>
-                            <p className="font-medium text-sm">{tx.products?.product_name}</p>
-                            <p className="text-xs text-gray-500">
-                              {isTransfer ? transferInfo : (
-                                <>{tx.warehouses?.name} {tx.channel && `→ ${tx.channel}`}</>
-                              )}
-                            </p>
+                            <p className="text-sm font-medium text-gray-900">{group.product?.product_name}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">{group.product?.product_code}</p>
                           </div>
+                          <span className="text-lg font-bold text-blue-600">{qty.toLocaleString()}<span className="text-xs font-normal text-gray-400 ml-1">개</span></span>
                         </div>
-                        <div className="text-right">
-                          <p className={`font-semibold text-sm ${
-                            isTransfer
-                              ? 'text-blue-600'
-                              : tx.type === '입고'
-                                ? 'text-green-600'
-                                : 'text-red-600'
-                          }`}>
-                            {isTransfer ? '↔' : tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}개
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            {new Date(tx.created_at).toLocaleDateString('ko-KR')}
-                          </p>
-                        </div>
-                      </div>
                       )
                     })}
                   </div>
                 )}
               </div>
             </div>
-          </div>
-          {/* 좌측 메인 컨텐츠 끝 */}
 
-          {/* 우측 AI 리포트 사이드바 */}
-          <div className="w-80 flex-shrink-0">
-            <div className="bg-gradient-to-b from-indigo-500 to-purple-600 rounded-lg shadow sticky top-4">
-              <div className="p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xl">🤖</span>
-                  <div>
-                    <h3 className="font-semibold text-white text-sm">AI 월간 리포트</h3>
-                    <p className="text-indigo-100 text-xs">
-                      {reportGeneratedAt ? `${reportGeneratedAt}` : '이번 달 현황 분석'}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={generateReport}
-                  disabled={reportLoading}
-                  className="w-full bg-white text-indigo-600 px-3 py-2 rounded-lg text-sm font-medium hover:bg-indigo-50 transition disabled:opacity-50"
-                >
-                  {reportLoading ? '분석 중...' : showReport ? '새로고침' : '리포트 생성'}
-                </button>
+            {/* 최근 입출고 */}
+            <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100">
+              <div className="p-5 border-b border-gray-100">
+                <h2 className="text-base font-semibold text-gray-900">최근 입출고</h2>
               </div>
-
-              {/* 리포트 결과 */}
-              {showReport && (
-                <div className="bg-white rounded-b-lg p-4 max-h-[calc(100vh-200px)] overflow-y-auto">
-                  {reportLoading ? (
-                    <div className="flex flex-col items-center justify-center py-8">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600"></div>
-                      <span className="mt-2 text-gray-600 text-xs">분석 중...</span>
-                    </div>
-                  ) : aiReport ? (
-                    <div className="text-sm">
-                      {aiReport.split('\n').map((line, idx) => {
-                        if (line.startsWith('### ')) {
-                          return <h4 key={idx} className="font-semibold text-gray-900 mt-3 mb-1 text-sm">{line.replace('### ', '')}</h4>
-                        } else if (line.startsWith('- ')) {
-                          return <p key={idx} className="text-gray-600 text-xs ml-2 my-0.5">{line}</p>
-                        } else if (line.startsWith('→')) {
-                          return <p key={idx} className="text-indigo-600 text-xs font-medium ml-2 my-1">{line}</p>
-                        } else if (line.trim()) {
-                          return <p key={idx} className="text-gray-700 text-xs my-1">{line}</p>
-                        }
-                        return null
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-gray-500 text-center py-4 text-xs">리포트를 생성해주세요</p>
-                  )}
-                </div>
-              )}
+              <div className="p-5">
+                {transactions.length === 0 ? (
+                  <p className="text-gray-400 text-sm text-center py-8">입출고 기록이 없습니다.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {transactions.map(tx => {
+                      const isTransfer = tx.type === '이동' || tx.note?.includes('[이동]')
+                      const displayType = isTransfer ? '이동' : tx.type
+                      return (
+                        <div key={tx.id} className="flex items-center gap-3">
+                          <span className={`w-14 text-center shrink-0 text-xs font-semibold px-2 py-1 rounded-full ${
+                            isTransfer ? 'bg-blue-100 text-blue-700'
+                            : tx.type === '입고' ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-red-100 text-red-700'
+                          }`}>
+                            {displayType}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{tx.products?.product_name}</p>
+                            <p className="text-xs text-gray-400 truncate">
+                              {tx.channel || tx.warehouses?.name || '-'}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className={`text-sm font-bold ${
+                              isTransfer ? 'text-blue-600'
+                              : tx.type === '입고' ? 'text-emerald-600'
+                              : 'text-red-600'
+                            }`}>
+                              {isTransfer ? '↔' : tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}
+                            </p>
+                            <p className="text-xs text-gray-400">{new Date(tx.created_at).toLocaleDateString('ko-KR')}</p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
+
           </div>
         </div>
-        {/* 메인 컨텐츠 + 사이드바 레이아웃 끝 */}
       </div>
-    </div>
+
+      {/* ── Toast ── */}
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-5 py-3 rounded-xl shadow-lg z-50 animate-fade-in">
+          {toast}
+        </div>
+      )}
+    </>
   )
 }

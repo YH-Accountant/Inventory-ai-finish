@@ -5,15 +5,27 @@ import { useRouter, usePathname } from 'next/navigation'
 import { useEffect } from 'react'
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth()
+  const { user, profile, loading } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
 
   useEffect(() => {
-    if (!loading && !user && pathname !== '/login') {
+    if (loading) return
+
+    // 로그인 안 됨 → 로그인 페이지로
+    if (!user && pathname !== '/login') {
       router.push('/login')
+      return
     }
-  }, [user, loading, pathname, router])
+
+    // 온보딩 미완료 → /onboarding 으로 (로그인/온보딩 페이지 제외)
+    if (user && profile && !profile.onboarding_completed
+      && pathname !== '/onboarding'
+      && pathname !== '/login') {
+      router.push('/onboarding')
+      return
+    }
+  }, [user, profile, loading, pathname, router])
 
   // 로딩 중
   if (loading) {

@@ -1,4 +1,5 @@
-@import "tailwindcss";
+/* Turbopack이 bare import를 사용자 홈에서 찾는 경우가 있어, 프로젝트 node_modules를 직접 지정 */
+@import "../node_modules/tailwindcss/index.css";
 
 :root {
   --background: #ffffff;

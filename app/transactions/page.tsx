@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/app/contexts/AuthContext'
-import Link from 'next/link'
+import Navbar from '@/app/components/Navbar'
 
 interface Product {
   id: string
@@ -23,8 +23,11 @@ interface Transaction {
   product_id: string
   warehouse_id: string
   type: string
+  sub_type: string | null
   quantity: number
+  resulting_quantity: number | null
   lot_number: string | null
+  stock_type: string | null
   channel: string | null
   note: string | null
   recorded_by: string | null
@@ -53,11 +56,14 @@ export default function TransactionsPage() {
     warehouse_id: '',        // 출고 창고 (from)
     to_warehouse_id: '',     // 입고 창고 (to) - 이동 시에만
     type: '입고',
+    sub_type: '',            // 출고 사유: 판매/샘플/폐기 | 조정 시 없음
     quantity: 0,
     channel: '',
     note: '',
     lot_number: '',          // 로트번호 (입고 시 필수, 형식: YYMMDD-NN)
-    transaction_date: ''     // 거래 날짜 (기본값: 오늘)
+    transaction_date: '',    // 거래 날짜 (기본값: 오늘)
+    stock_type: '일반',      // 재고 구분: 일반 / 기획용
+    lot_unit_cost: ''        // 이번 입고 원가 (기획용일 때 직접 입력, 빈값이면 제품 기본원가)
   })
 
   // 로트번호 형식 검증 (YYMMDD-NN)
@@ -91,6 +97,17 @@ export default function TransactionsPage() {
     return `${yy}${mm}${dd}-01`
   }
 
+  // 특정 제품+창고의 현재 총 재고 조회 (resulting_quantity 계산용)
+  async function getTotalInventory(product_id: string, warehouse_id: string): Promise<number> {
+    const { data } = await supabase
+      .from('inventory')
+      .select('quantity')
+      .eq('product_id', product_id)
+      .eq('warehouse_id', warehouse_id)
+      .gt('quantity', 0)
+    return (data || []).reduce((sum, inv) => sum + inv.quantity, 0)
+  }
+
   useEffect(() => {
     fetchData()
 
@@ -110,17 +127,21 @@ export default function TransactionsPage() {
   }, [])
 
   async function fetchData() {
+    if (!profile?.company_id) return
     setLoading(true)
+    const cid = profile.company_id
 
     // 활성 제품만 가져오기
     const { data: productsData } = await supabase
       .from('products')
       .select('id, product_name, product_code, unit_cost, shelf_life_months')
+      .eq('company_id', cid)
       .eq('is_active', true)
 
     const { data: warehousesData } = await supabase
       .from('warehouses')
       .select('id, name')
+      .eq('company_id', cid)
 
     const { data: transactionsData } = await supabase
       .from('transactions')
@@ -129,6 +150,7 @@ export default function TransactionsPage() {
         products (id, product_name, product_code),
         warehouses (id, name)
       `)
+      .eq('company_id', cid)
       .order('created_at', { ascending: false })
       .limit(50)
 
@@ -164,6 +186,12 @@ export default function TransactionsPage() {
       return
     }
 
+    // 출고인 경우 사유 필수
+    if (formData.type === '출고' && !formData.sub_type) {
+      alert('출고 사유를 선택해주세요. (판매 / 샘플 / 폐기)')
+      return
+    }
+
     // 날짜 처리: 선택한 날짜 또는 오늘
     const transactionDate = formData.transaction_date
       ? new Date(formData.transaction_date + 'T09:00:00').toISOString()
@@ -188,19 +216,7 @@ export default function TransactionsPage() {
         return
       }
 
-      // 이동 트랜잭션 (단일 레코드)
-      await supabase.from('transactions').insert([{
-        product_id: formData.product_id,
-        warehouse_id: formData.warehouse_id,
-        type: '이동',
-        quantity: formData.quantity,
-        channel: null,
-        note: `${fromWarehouse?.name} → ${toWarehouse?.name}${formData.note ? ` (${formData.note})` : ''}`,
-        recorded_by: profile?.name || null,
-        created_at: transactionDate
-      }])
-
-      // 3. from 창고 재고 감소
+      // from 창고 재고 감소
       const { data: fromInv } = await supabase
         .from('inventory')
         .select('id, quantity')
@@ -214,7 +230,7 @@ export default function TransactionsPage() {
           .eq('id', fromInv.id)
       }
 
-      // 4. to 창고 재고 증가
+      // to 창고 재고 증가
       const { data: toInv } = await supabase
         .from('inventory')
         .select('id, quantity')
@@ -230,11 +246,106 @@ export default function TransactionsPage() {
         await supabase.from('inventory').insert([{
           product_id: formData.product_id,
           warehouse_id: formData.to_warehouse_id,
-          quantity: formData.quantity
+          quantity: formData.quantity,
+          company_id: profile?.company_id
         }])
       }
 
+      // resulting_quantity: 이동 후 from 창고 잔액
+      const moveResultingQty = await getTotalInventory(formData.product_id, formData.warehouse_id)
+
+      // 이동 트랜잭션 (단일 레코드)
+      await supabase.from('transactions').insert([{
+        product_id: formData.product_id,
+        warehouse_id: formData.warehouse_id,
+        type: '이동',
+        sub_type: null,
+        quantity: formData.quantity,
+        resulting_quantity: moveResultingQty,
+        channel: null,
+        note: `${fromWarehouse?.name} → ${toWarehouse?.name}${formData.note ? ` (${formData.note})` : ''}`,
+        recorded_by: profile?.name || null,
+        created_at: transactionDate,
+        company_id: profile?.company_id
+      }])
+
       alert(`이동 완료!\n${fromWarehouse?.name} → ${toWarehouse?.name}`)
+    } else if (formData.type === '조정') {
+      // ── 조정 처리 ──
+      const targetQty = formData.quantity
+      const currentTotal = await getTotalInventory(formData.product_id, formData.warehouse_id)
+      const delta = targetQty - currentTotal
+
+      if (delta === 0) {
+        alert('현재 재고와 목표 수량이 같습니다. 조정이 필요하지 않습니다.')
+        return
+      }
+
+      if (delta > 0) {
+        // 재고 증가: 기존 로트 중 마지막 것에 수량 추가 (없으면 미지정로트 생성)
+        const { data: existingLots } = await supabase
+          .from('inventory')
+          .select('id, quantity, lot_number')
+          .eq('product_id', formData.product_id)
+          .eq('warehouse_id', formData.warehouse_id)
+          .gt('quantity', 0)
+          .order('lot_number', { ascending: false })
+          .limit(1)
+
+        if (existingLots && existingLots.length > 0) {
+          // 가장 최근 로트에 수량 추가
+          await supabase.from('inventory')
+            .update({ quantity: existingLots[0].quantity + delta, updated_at: new Date().toISOString() })
+            .eq('id', existingLots[0].id)
+        } else {
+          // 로트가 없는 경우에만 새 레코드 생성
+          await supabase.from('inventory').insert([{
+            product_id: formData.product_id,
+            warehouse_id: formData.warehouse_id,
+            quantity: delta,
+            lot_number: null
+          }])
+        }
+      } else {
+        // 재고 감소: FIFO로 차감
+        const { data: inventoryLots } = await supabase
+          .from('inventory')
+          .select('id, quantity, lot_number')
+          .eq('product_id', formData.product_id)
+          .eq('warehouse_id', formData.warehouse_id)
+          .gt('quantity', 0)
+          .order('lot_number', { ascending: true })
+
+        let remaining = Math.abs(delta)
+        for (const lot of inventoryLots || []) {
+          if (remaining <= 0) break
+          const deduct = Math.min(lot.quantity, remaining)
+          const newQty = lot.quantity - deduct
+          if (newQty <= 0) {
+            await supabase.from('inventory').delete().eq('id', lot.id)
+          } else {
+            await supabase.from('inventory').update({ quantity: newQty, updated_at: new Date().toISOString() }).eq('id', lot.id)
+          }
+          remaining -= deduct
+        }
+      }
+
+      const { error: adjError } = await supabase.from('transactions').insert([{
+        product_id: formData.product_id,
+        warehouse_id: formData.warehouse_id,
+        type: '조정',
+        sub_type: null,
+        quantity: delta,
+        resulting_quantity: targetQty,
+        channel: null,
+        note: `실사 조정: ${currentTotal.toLocaleString()} → ${targetQty.toLocaleString()}개${formData.note ? ` (${formData.note})` : ''}`,
+        recorded_by: profile?.name || null,
+        created_at: transactionDate,
+        company_id: profile?.company_id
+      }])
+      if (adjError) { alert('기록 실패: ' + adjError.message); return }
+
+      alert(`조정 완료!\n${currentTotal.toLocaleString()}개 → ${targetQty.toLocaleString()}개`)
     } else {
       // 일반 입고/출고 처리
 
@@ -271,6 +382,8 @@ export default function TransactionsPage() {
             .from('inventory')
             .update({
               quantity: existingInventory.quantity + formData.quantity,
+              stock_type: formData.stock_type,
+              lot_unit_cost: formData.lot_unit_cost !== '' ? Number(formData.lot_unit_cost) : existingInventory.lot_unit_cost,
               updated_at: new Date().toISOString()
             })
             .eq('id', existingInventory.id)
@@ -281,22 +394,31 @@ export default function TransactionsPage() {
               product_id: formData.product_id,
               warehouse_id: formData.warehouse_id,
               quantity: formData.quantity,
-              lot_number: formData.lot_number
+              lot_number: formData.lot_number,
+              stock_type: formData.stock_type,
+              lot_unit_cost: formData.lot_unit_cost !== '' ? Number(formData.lot_unit_cost) : null,
+              company_id: profile?.company_id
             }])
         }
 
         // 입고 기록 저장
+        const inboundResultingQty = await getTotalInventory(formData.product_id, formData.warehouse_id)
         const { error: txError } = await supabase
           .from('transactions')
           .insert([{
             product_id: formData.product_id,
             warehouse_id: formData.warehouse_id,
-            type: formData.type,
+            type: '입고',
+            sub_type: null,
             quantity: formData.quantity,
+            resulting_quantity: inboundResultingQty,
+            lot_number: formData.lot_number || null,
+            stock_type: formData.stock_type || '일반',
             channel: formData.channel || null,
             note: formData.note || null,
             recorded_by: profile?.name || null,
-            created_at: transactionDate
+            created_at: transactionDate,
+            company_id: profile?.company_id
           }])
         if (txError) { alert('기록 실패: ' + txError.message); return }
       } else {
@@ -361,6 +483,7 @@ export default function TransactionsPage() {
         }
 
         // 재고 차감 성공 후 출고 기록 저장 (로트 정보 포함)
+        const outboundResultingQty = await getTotalInventory(formData.product_id, formData.warehouse_id)
         const lotNote = `[로트] ${lotDeductions.join(' / ')}`
         const finalNote = formData.note ? `${formData.note} | ${lotNote}` : lotNote
         const { error: txError } = await supabase
@@ -368,12 +491,15 @@ export default function TransactionsPage() {
           .insert([{
             product_id: formData.product_id,
             warehouse_id: formData.warehouse_id,
-            type: formData.type,
+            type: '출고',
+            sub_type: formData.sub_type || null,
             quantity: formData.quantity,
+            resulting_quantity: outboundResultingQty,
             channel: formData.channel || null,
             note: finalNote,
             recorded_by: profile?.name || null,
-            created_at: transactionDate
+            created_at: transactionDate,
+            company_id: profile?.company_id
           }])
         if (txError) { alert('기록 실패: ' + txError.message); return }
       }
@@ -386,11 +512,14 @@ export default function TransactionsPage() {
       warehouse_id: '',
       to_warehouse_id: '',
       type: '입고',
+      sub_type: '',
       quantity: 0,
       channel: '',
       note: '',
       lot_number: '',
-      transaction_date: ''
+      transaction_date: '',
+      stock_type: '일반',
+      lot_unit_cost: ''
     })
     setShowForm(false)
     fetchData()
@@ -450,36 +579,83 @@ export default function TransactionsPage() {
           }
         }
       } else {
-        // 일반 입고/출고 삭제
-        let inventoryQuery = supabase
-          .from('inventory')
-          .select('id, quantity')
-          .eq('product_id', tx.product_id)
-          .eq('warehouse_id', tx.warehouse_id)
+        if (tx.type === '입고') {
+          // 입고 삭제: lot_number + stock_type으로 정확한 로트 찾아서 수량 감소
+          let q = supabase.from('inventory').select('id, quantity')
+            .eq('product_id', tx.product_id)
+            .eq('warehouse_id', tx.warehouse_id)
+          if (tx.lot_number) q = q.eq('lot_number', tx.lot_number)
+          if (tx.stock_type) q = q.eq('stock_type', tx.stock_type)
+          const { data: inv } = await q.maybeSingle()
+          if (inv) {
+            const restoredQty = inv.quantity - tx.quantity
+            if (restoredQty <= 0) {
+              await supabase.from('inventory').delete().eq('id', inv.id)
+            } else {
+              await supabase.from('inventory').update({ quantity: restoredQty, updated_at: new Date().toISOString() }).eq('id', inv.id)
+            }
+          }
+        } else {
+          // 출고 삭제: note에서 로트 정보 파싱해서 해당 로트로 복원
+          // note 형식: "[로트] 260115-01 50개 / 260116-01 30개"
+          const lotMatches = tx.note?.match(/(\d{6}-\d{2})\s+(\d+)개/g) || []
 
-        // 입고 삭제 시 lot_number로 정확한 로트 찾기
-        if (tx.type === '입고' && tx.lot_number) {
-          inventoryQuery = inventoryQuery.eq('lot_number', tx.lot_number)
-        }
+          if (lotMatches.length > 0) {
+            // 로트별로 정확히 복원
+            for (const match of lotMatches) {
+              const m = match.match(/(\d{6}-\d{2})\s+(\d+)개/)
+              if (!m) continue
+              const lotNumber = m[1]
+              const qty = parseInt(m[2])
 
-        const { data: inventory } = await inventoryQuery.single()
+              const { data: inv } = await supabase
+                .from('inventory')
+                .select('id, quantity')
+                .eq('product_id', tx.product_id)
+                .eq('warehouse_id', tx.warehouse_id)
+                .eq('lot_number', lotNumber)
+                .maybeSingle()
 
-        if (inventory) {
-          const restoredQty = tx.type === '입고'
-            ? inventory.quantity - tx.quantity  // 입고 삭제 → 재고 감소
-            : inventory.quantity + tx.quantity  // 출고 삭제 → 재고 증가
-
-          if (restoredQty <= 0) {
-            // 수량이 0이하면 재고 레코드 삭제
-            await supabase
-              .from('inventory')
-              .delete()
-              .eq('id', inventory.id)
+              if (inv) {
+                await supabase.from('inventory')
+                  .update({ quantity: inv.quantity + qty, updated_at: new Date().toISOString() })
+                  .eq('id', inv.id)
+              } else {
+                // 로트가 완전히 소진돼서 row가 없으면 새로 생성
+                await supabase.from('inventory').insert([{
+                  product_id: tx.product_id,
+                  warehouse_id: tx.warehouse_id,
+                  quantity: qty,
+                  lot_number: lotNumber,
+                  stock_type: '일반',
+                  company_id: profile?.company_id
+                }])
+              }
+            }
           } else {
-            await supabase
+            // note에 로트 정보 없으면 가장 오래된 로트(FIFO)에 복원
+            const { data: lots } = await supabase
               .from('inventory')
-              .update({ quantity: restoredQty, updated_at: new Date().toISOString() })
-              .eq('id', inventory.id)
+              .select('id, quantity, lot_number')
+              .eq('product_id', tx.product_id)
+              .eq('warehouse_id', tx.warehouse_id)
+              .order('lot_number', { ascending: true })
+              .limit(1)
+
+            if (lots && lots.length > 0) {
+              await supabase.from('inventory')
+                .update({ quantity: lots[0].quantity + tx.quantity, updated_at: new Date().toISOString() })
+                .eq('id', lots[0].id)
+            } else {
+              await supabase.from('inventory').insert([{
+                product_id: tx.product_id,
+                warehouse_id: tx.warehouse_id,
+                quantity: tx.quantity,
+                lot_number: null,
+                stock_type: '일반',
+                company_id: profile?.company_id
+              }])
+            }
           }
         }
       }
@@ -507,15 +683,14 @@ export default function TransactionsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
+    <>
+      <Navbar />
+      <div className="min-h-screen bg-slate-50 pt-20 p-8">
       <div className="max-w-6xl mx-auto">
         {/* 헤더 */}
         <div className="flex justify-between items-center mb-8">
           <div>
-            <Link href="/" className="text-blue-600 hover:underline mb-2 inline-block">
-              ← 대시보드로
-            </Link>
-            <h1 className="text-3xl font-bold text-gray-900">입출고 관리</h1>
+            <h1 className="text-2xl font-bold text-gray-900">입출고 관리</h1>
           </div>
           <button
             onClick={() => {
@@ -527,7 +702,7 @@ export default function TransactionsPage() {
               }
               setShowForm(!showForm)
             }}
-            className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition"
+            className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition"
           >
             {showForm ? '취소' : '+ 입출고 등록'}
           </button>
@@ -542,13 +717,13 @@ export default function TransactionsPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   유형 *
                 </label>
-                <div className="flex gap-4">
+                <div className="flex gap-4 flex-wrap">
                   <label className="flex items-center">
                     <input
                       type="radio"
                       value="입고"
                       checked={formData.type === '입고'}
-                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: ''})}
+                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: '', sub_type: ''})}
                       className="mr-2"
                     />
                     <span className="text-green-600 font-medium">입고 (+)</span>
@@ -558,7 +733,7 @@ export default function TransactionsPage() {
                       type="radio"
                       value="출고"
                       checked={formData.type === '출고'}
-                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: ''})}
+                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: '', sub_type: ''})}
                       className="mr-2"
                     />
                     <span className="text-red-600 font-medium">출고 (-)</span>
@@ -568,22 +743,53 @@ export default function TransactionsPage() {
                       type="radio"
                       value="이동"
                       checked={formData.type === '이동'}
-                      onChange={(e) => setFormData({...formData, type: e.target.value})}
+                      onChange={(e) => setFormData({...formData, type: e.target.value, sub_type: ''})}
                       className="mr-2"
                     />
                     <span className="text-blue-600 font-medium">이동 (→)</span>
                   </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="조정"
+                      checked={formData.type === '조정'}
+                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: '', sub_type: ''})}
+                      className="mr-2"
+                    />
+                    <span className="text-orange-600 font-medium">조정 (실사)</span>
+                  </label>
                 </div>
+                {formData.type === '조정' && (
+                  <p className="text-xs text-orange-500 mt-1">실사 후 실제 수량을 입력하면 자동으로 차이를 조정합니다.</p>
+                )}
               </div>
+              {formData.type === '출고' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    출고 사유 *
+                  </label>
+                  <select
+                    required
+                    value={formData.sub_type}
+                    onChange={(e) => setFormData({...formData, sub_type: e.target.value})}
+                    className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  >
+                    <option value="">사유 선택</option>
+                    <option value="판매">판매</option>
+                    <option value="샘플">샘플</option>
+                    <option value="폐기">폐기</option>
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  수량 *
+                  {formData.type === '조정' ? '목표 수량 (실사 결과) *' : '수량 *'}
                 </label>
                 <input
                   type="number"
                   required
-                  min="1"
-                  placeholder="예: 500"
+                  min={formData.type === '조정' ? '0' : '1'}
+                  placeholder={formData.type === '조정' ? '실사 후 실제 수량 입력' : '예: 500'}
                   value={formData.quantity || ''}
                   onChange={(e) => setFormData({...formData, quantity: Number(e.target.value)})}
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
@@ -674,20 +880,68 @@ export default function TransactionsPage() {
                 />
               </div>
               {formData.type === '입고' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    로트번호 * <span className="text-gray-400 font-normal">(YYMMDD-NN)</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder={generateDefaultLotNumber()}
-                    value={formData.lot_number}
-                    onChange={(e) => setFormData({...formData, lot_number: e.target.value})}
-                    className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">예: 250128-01 (2025년 1월 28일, 첫 번째 생산)</p>
-                </div>
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      로트번호 * <span className="text-gray-400 font-normal">(YYMMDD-NN)</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder={generateDefaultLotNumber()}
+                      value={formData.lot_number}
+                      onChange={(e) => setFormData({...formData, lot_number: e.target.value})}
+                      className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">예: 250128-01 (2025년 1월 28일, 첫 번째 생산)</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      재고 구분 *
+                    </label>
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, stock_type: '일반'})}
+                        className={`flex-1 py-2 rounded-lg border-2 text-sm font-medium transition ${
+                          formData.stock_type === '일반'
+                            ? 'border-blue-500 bg-blue-50 text-blue-700'
+                            : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                        }`}
+                      >
+                        일반
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, stock_type: '기획용'})}
+                        className={`flex-1 py-2 rounded-lg border-2 text-sm font-medium transition ${
+                          formData.stock_type === '기획용'
+                            ? 'border-orange-500 bg-orange-50 text-orange-700'
+                            : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                        }`}
+                      >
+                        기획용
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">기획세트 출고 시 기획용 재고만 차감됩니다</p>
+                  </div>
+                  {formData.stock_type === '기획용' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        이번 입고 원가 <span className="text-gray-400 font-normal">(원/개)</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="미입력 시 제품 기본원가 사용"
+                        value={formData.lot_unit_cost}
+                        onChange={(e) => setFormData({...formData, lot_unit_cost: e.target.value})}
+                        className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">OEM 납품가가 기존과 다를 때 입력하세요</p>
+                    </div>
+                  )}
+                </>
               )}
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -760,9 +1014,12 @@ export default function TransactionsPage() {
                           ? 'bg-blue-100 text-blue-800'
                           : tx.type === '입고'
                           ? 'bg-green-100 text-green-800'
+                          : tx.type === '조정'
+                          ? 'bg-orange-100 text-orange-800'
                           : 'bg-red-100 text-red-800'
                       }`}>
                         {displayType}
+                        {tx.sub_type && ` (${tx.sub_type})`}
                       </span>
                       <div>
                         <p className="font-medium">
@@ -798,10 +1055,15 @@ export default function TransactionsPage() {
                             ? 'text-blue-600'
                             : tx.type === '입고'
                               ? 'text-green-600'
+                              : tx.type === '조정'
+                              ? 'text-orange-600'
                               : 'text-red-600'
                         }`}>
-                          {isTransfer ? '↔' : tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}개
+                          {isTransfer ? '↔' : tx.type === '입고' ? '+' : tx.type === '조정' ? (tx.quantity >= 0 ? '+' : '') : '-'}{tx.quantity.toLocaleString()}개
                         </p>
+                        {tx.resulting_quantity !== null && tx.resulting_quantity !== undefined && (
+                          <p className="text-xs text-gray-400">{tx.warehouses?.name} 잔액: {tx.resulting_quantity.toLocaleString()}개</p>
+                        )}
                         <p className="text-sm text-gray-500">
                           {new Date(tx.created_at).toLocaleDateString('ko-KR')}
                         </p>
@@ -826,5 +1088,6 @@ export default function TransactionsPage() {
         </div>
       </div>
     </div>
+    </>
   )
 }

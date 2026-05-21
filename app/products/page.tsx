@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import Link from 'next/link'
+import { useAuth } from '@/app/contexts/AuthContext'
+import Navbar from '@/app/components/Navbar'
 
 interface Product {
   id: string
@@ -17,9 +18,11 @@ interface Product {
 }
 
 export default function ProductsPage() {
+  const { profile } = useAuth()
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [editingCost, setEditingCost] = useState<{ id: string; value: string } | null>(null)
 
   // 폼 데이터
   const [formData, setFormData] = useState({
@@ -47,10 +50,12 @@ export default function ProductsPage() {
   }, [])
 
   async function fetchProducts() {
+    if (!profile?.company_id) return
     setLoading(true)
     const { data } = await supabase
       .from('products')
       .select('*')
+      .eq('company_id', profile.company_id)
       .order('created_at', { ascending: false })
 
     setProducts(data || [])
@@ -64,7 +69,8 @@ export default function ProductsPage() {
       .from('products')
       .insert([{
         ...formData,
-        unit_cost: Number(formData.unit_cost)
+        unit_cost: Number(formData.unit_cost),
+        company_id: profile?.company_id
       }])
 
     if (error) {
@@ -82,6 +88,14 @@ export default function ProductsPage() {
       channel: ''
     })
     setShowForm(false)
+    fetchProducts()
+  }
+
+  async function saveUnitCost(id: string, value: string) {
+    const cost = Number(value)
+    if (isNaN(cost) || cost < 0) return
+    await supabase.from('products').update({ unit_cost: cost }).eq('id', id)
+    setEditingCost(null)
     fetchProducts()
   }
 
@@ -108,15 +122,14 @@ export default function ProductsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
+    <>
+      <Navbar />
+      <div className="min-h-screen bg-slate-50 pt-20 p-8">
       <div className="max-w-6xl mx-auto">
         {/* 헤더 */}
         <div className="flex justify-between items-center mb-8">
           <div>
-            <Link href="/" className="text-blue-600 hover:underline mb-2 inline-block">
-              ← 대시보드로
-            </Link>
-            <h1 className="text-3xl font-bold text-gray-900">제품 관리</h1>
+            <h1 className="text-2xl font-bold text-gray-900">제품 관리</h1>
           </div>
           <button
             onClick={() => setShowForm(!showForm)}
@@ -258,7 +271,37 @@ export default function ProductsPage() {
                           {product.version}
                         </span>
                       </td>
-                      <td className="py-4">{product.unit_cost.toLocaleString()}원</td>
+                      <td className="py-4">
+                        {editingCost?.id === product.id ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              autoFocus
+                              value={editingCost.value}
+                              onChange={e => setEditingCost({ id: product.id, value: e.target.value })}
+                              onBlur={() => saveUnitCost(product.id, editingCost.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') saveUnitCost(product.id, editingCost.value)
+                                if (e.key === 'Escape') setEditingCost(null)
+                              }}
+                              className="w-24 border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-500">원</span>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setEditingCost({ id: product.id, value: String(product.unit_cost) })}
+                            className="text-left hover:bg-blue-50 px-2 py-1 rounded transition group"
+                            title="클릭하여 원가 수정"
+                          >
+                            {product.unit_cost > 0
+                              ? <span>{product.unit_cost.toLocaleString()}원</span>
+                              : <span className="text-gray-400 text-sm">미입력 (클릭)</span>
+                            }
+                            <span className="text-blue-400 text-xs ml-1 opacity-0 group-hover:opacity-100">✏️</span>
+                          </button>
+                        )}
+                      </td>
                       <td className="py-4 text-gray-500">{product.channel || '-'}</td>
                       <td className="py-4">
                         <button
@@ -281,5 +324,6 @@ export default function ProductsPage() {
         </div>
       </div>
     </div>
+    </>
   )
 }
