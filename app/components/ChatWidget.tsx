@@ -908,6 +908,14 @@ export default function ChatWidget() {
 
   return (
     <>
+      {/* 모바일 배경 오버레이 */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40 md:hidden"
+          onClick={() => setIsOpen(false)}
+        />
+      )}
+
       {/* 채팅 버튼 */}
       <button
         onClick={() => setIsOpen(!isOpen)}
@@ -916,12 +924,18 @@ export default function ChatWidget() {
         {isOpen ? '✕' : '💬'}
       </button>
 
-      {/* 채팅 창 */}
+      {/* 채팅 창 - 모바일: 하단 풀스크린 / 데스크탑: 우측 하단 팝업 */}
       {isOpen && (
-        <div className="fixed bottom-24 right-6 w-80 sm:w-96 h-[500px] bg-white rounded-lg shadow-2xl flex flex-col z-50 border">
+        <div className="fixed inset-x-0 bottom-0 h-[85vh] md:inset-auto md:bottom-24 md:right-6 md:w-96 md:h-[500px] bg-white rounded-t-2xl md:rounded-lg shadow-2xl flex flex-col z-50 border">
           {/* 헤더 */}
-          <div className="bg-blue-600 text-white p-3 rounded-t-lg">
+          <div className="bg-blue-600 text-white p-4 md:p-3 rounded-t-2xl md:rounded-t-lg flex items-center justify-between shrink-0">
             <h3 className="font-semibold">AI 재고관리 어시스턴트</h3>
+            <button
+              onClick={() => setIsOpen(false)}
+              className="md:hidden text-white/80 hover:text-white text-xl leading-none"
+            >
+              ✕
+            </button>
           </div>
 
           {/* 메시지 영역 */}
@@ -955,21 +969,21 @@ export default function ChatWidget() {
           </div>
 
           {/* 입력 영역 */}
-          <form ref={formRef} onSubmit={handleSubmit} className="p-3 border-t flex gap-2">
+          <form ref={formRef} onSubmit={handleSubmit} className="p-3 border-t flex gap-2 shrink-0">
             <input
               ref={inputRef}
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="입고/출고/이동 요청 입력..."
-              className="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex-1 border rounded-lg px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={loading}
               autoFocus
             />
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
             >
               전송
             </button>

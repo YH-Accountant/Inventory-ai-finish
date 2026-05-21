@@ -306,28 +306,28 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-6 py-8">
 
           {/* ── KPI 카드 4개 ── */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">총 제품</p>
-              <p className="text-3xl font-bold text-gray-900">{products.length}</p>
-              <p className="text-xs text-gray-400 mt-1">개 등록됨</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div className="bg-white rounded-xl shadow-sm p-3 md:p-5 border border-gray-100">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">총 제품</p>
+              <p className="text-2xl md:text-3xl font-bold text-gray-900">{products.length}</p>
+              <p className="text-xs text-gray-400">개 등록됨</p>
             </div>
-            <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">창고</p>
-              <p className="text-3xl font-bold text-gray-900">{warehouses.length}</p>
-              <p className="text-xs text-gray-400 mt-1">개 운영 중</p>
+            <div className="bg-white rounded-xl shadow-sm p-3 md:p-5 border border-gray-100">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">창고</p>
+              <p className="text-2xl md:text-3xl font-bold text-gray-900">{warehouses.length}</p>
+              <p className="text-xs text-gray-400">개 운영 중</p>
             </div>
-            <div className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">오늘 입출고</p>
-              <p className="text-3xl font-bold text-blue-600">{todayCount}</p>
-              <p className="text-xs text-gray-400 mt-1">건 처리됨</p>
+            <div className="bg-white rounded-xl shadow-sm p-3 md:p-5 border border-gray-100">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">오늘 입출고</p>
+              <p className="text-2xl md:text-3xl font-bold text-blue-600">{todayCount}</p>
+              <p className="text-xs text-gray-400">건 처리됨</p>
             </div>
-            <div className={`rounded-2xl shadow-sm p-5 border ${expiringCount > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-gray-100'}`}>
-              <p className={`text-xs font-semibold uppercase tracking-wide mb-2 ${expiringCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>유통기한 임박</p>
-              <p className={`text-3xl font-bold ${expiringCount > 0 ? 'text-red-600' : 'text-emerald-500'}`}>
+            <div className={`rounded-xl shadow-sm p-3 md:p-5 border ${expiringCount > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-gray-100'}`}>
+              <p className={`text-xs font-semibold uppercase tracking-wide mb-1 ${expiringCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>유통기한 임박</p>
+              <p className={`text-2xl md:text-3xl font-bold ${expiringCount > 0 ? 'text-red-600' : 'text-emerald-500'}`}>
                 {expiringCount > 0 ? expiringCount : '없음'}
               </p>
-              <p className={`text-xs mt-1 ${expiringCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>
+              <p className={`text-xs ${expiringCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>
                 {expiringCount > 0 ? '로트 주의 필요' : '정상'}
               </p>
             </div>

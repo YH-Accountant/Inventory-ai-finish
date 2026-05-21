@@ -18,6 +18,12 @@ export const metadata: Metadata = {
   description: "중소기업을 위한 간편한 재고관리 시스템",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{

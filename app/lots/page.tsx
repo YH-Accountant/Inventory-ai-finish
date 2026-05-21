@@ -381,33 +381,33 @@ export default function LotsPage() {
         </div>
 
         {/* 요약 카드 */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-sm font-medium text-gray-500">제품 수</h3>
-            <p className="text-3xl font-bold text-gray-900 mt-2">{productGroups.length}개</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <div className="bg-white rounded-lg shadow p-3 md:p-6">
+            <h3 className="text-xs font-medium text-gray-500">제품 수</h3>
+            <p className="text-2xl md:text-3xl font-bold text-gray-900 mt-1">{productGroups.length}개</p>
           </div>
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-sm font-medium text-gray-500">총 로트 수</h3>
-            <p className="text-3xl font-bold text-gray-900 mt-2">{totalLotCount}개</p>
+          <div className="bg-white rounded-lg shadow p-3 md:p-6">
+            <h3 className="text-xs font-medium text-gray-500">총 로트 수</h3>
+            <p className="text-2xl md:text-3xl font-bold text-gray-900 mt-1">{totalLotCount}개</p>
           </div>
           <div
-            className={`bg-white rounded-lg shadow p-6 cursor-pointer transition hover:ring-2 hover:ring-yellow-400 ${
+            className={`bg-white rounded-lg shadow p-3 md:p-6 cursor-pointer transition hover:ring-2 hover:ring-yellow-400 ${
               filter === 'warning' ? 'ring-2 ring-yellow-400' : ''
             }`}
             onClick={() => setFilter(filter === 'warning' ? 'all' : 'warning')}
           >
-            <h3 className="text-sm font-medium text-yellow-600">유통기한 임박</h3>
-            <p className="text-3xl font-bold text-yellow-600 mt-2">{warningCount}개</p>
-            <p className="text-xs text-gray-400 mt-1">유통기한 {Math.round(companyWarningRatio * 100)}% 이하</p>
+            <h3 className="text-xs font-medium text-yellow-600">유통기한 임박</h3>
+            <p className="text-2xl md:text-3xl font-bold text-yellow-600 mt-1">{warningCount}개</p>
+            <p className="text-xs text-gray-400">유통기한 {Math.round(companyWarningRatio * 100)}% 이하</p>
           </div>
           <div
-            className={`bg-white rounded-lg shadow p-6 cursor-pointer transition hover:ring-2 hover:ring-red-400 ${
+            className={`bg-white rounded-lg shadow p-3 md:p-6 cursor-pointer transition hover:ring-2 hover:ring-red-400 ${
               filter === 'expired' ? 'ring-2 ring-red-400' : ''
             }`}
             onClick={() => setFilter(filter === 'expired' ? 'all' : 'expired')}
           >
-            <h3 className="text-sm font-medium text-red-600">유통기한 만료</h3>
-            <p className="text-3xl font-bold text-red-600 mt-2">{expiredCount}개</p>
+            <h3 className="text-xs font-medium text-red-600">유통기한 만료</h3>
+            <p className="text-2xl md:text-3xl font-bold text-red-600 mt-1">{expiredCount}개</p>
           </div>
         </div>
 
