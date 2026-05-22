@@ -496,7 +496,7 @@ export default function LotsPage() {
                       {group.lots.map((lot, idx) => (
                         <div
                           key={`${lot.lot_number || 'none'}_${idx}`}
-                          className={`px-5 py-3 border-b last:border-b-0 ${
+                          className={`px-3 py-2 border-b last:border-b-0 ${
                             lot.status === 'expired'
                               ? 'bg-red-50'
                               : lot.status === 'warning'
@@ -504,20 +504,19 @@ export default function LotsPage() {
                               : 'bg-white'
                           }`}
                         >
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-3">
-                              <span className="text-gray-300 text-sm">├</span>
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-2">
                               {getStatusBadge(lot.status)}
-                              <span className="font-mono font-medium text-sm text-gray-800">
+                              <span className="font-mono font-medium text-xs text-gray-800">
                                 {lot.lot_number || '(로트 미지정)'}
                               </span>
                             </div>
-                            <span className="font-semibold text-sm text-gray-700">
+                            <span className="font-semibold text-xs text-gray-700">
                               {lot.totalQuantity.toLocaleString()}개
                             </span>
                           </div>
 
-                          <div className="ml-8 flex items-center gap-6 text-xs text-gray-500">
+                          <div className="flex items-center gap-3 text-xs text-gray-500 flex-wrap">
                             <div>
                               <span>제조일:</span>
                               <span className="ml-1 text-gray-700">{formatDate(lot.manufacture_date)}</span>
@@ -538,7 +537,7 @@ export default function LotsPage() {
                           </div>
 
                           {/* 창고별 수량 */}
-                          <div className="ml-8 mt-2 flex gap-2 flex-wrap">
+                          <div className="mt-1 flex gap-1.5 flex-wrap">
                             {lot.items.map((item, itemIdx) => (
                               <div
                                 key={itemIdx}

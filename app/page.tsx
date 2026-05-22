@@ -340,7 +340,7 @@ export default function Home() {
                 <span className="text-blue-600 font-bold text-sm">🤖 AI 운영 브리핑</span>
                 <span className="text-xs text-blue-400">{new Date().toLocaleDateString('ko-KR')} 기준</span>
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 {briefing.urgentProduct && briefing.urgentDays !== null ? (
                   <div className="flex items-center gap-2 text-sm">
                     <span className="text-amber-500 font-bold">⚠️</span>
@@ -425,11 +425,11 @@ export default function Home() {
           </div>
 
           {/* ── 재고 현황 + 최근 입출고 ── */}
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 md:gap-6">
 
             {/* 재고 현황 */}
-            <div className="lg:col-span-3 bg-white rounded-2xl shadow-sm border border-gray-100">
-              <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+            <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-gray-100">
+              <div className="p-3 md:p-5 border-b border-gray-100 flex items-center gap-2">
                 <h2 className="text-base font-semibold text-gray-900 shrink-0">재고 현황</h2>
                 <input
                   type="text"
@@ -456,23 +456,23 @@ export default function Home() {
                   ))}
                 </div>
               </div>
-              <div className="p-5">
+              <div className="p-3 md:p-5">
                 {inventoryGroups.length === 0 ? (
-                  <p className="text-gray-400 text-sm text-center py-8">등록된 재고가 없습니다.</p>
+                  <p className="text-gray-400 text-xs text-center py-6">등록된 재고가 없습니다.</p>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 gap-2">
                     {inventoryGroups.map(group => {
                       const filtered = selectedWarehouse === '전체'
                         ? group.items
                         : group.items.filter(i => i.warehouses?.name === selectedWarehouse)
                       const qty = filtered.reduce((sum, i) => sum + i.quantity, 0)
                       return (
-                        <div key={group.product?.id} className="flex items-center justify-between border border-gray-100 rounded-xl px-4 py-3 hover:border-blue-200 hover:bg-blue-50/30 transition">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{group.product?.product_name}</p>
-                            <p className="text-xs text-gray-400 mt-0.5">{group.product?.product_code}</p>
+                        <div key={group.product?.id} className="flex items-center justify-between border border-gray-100 rounded-lg px-2.5 py-2 hover:border-blue-200 hover:bg-blue-50/30 transition">
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-gray-900 truncate">{group.product?.product_name}</p>
+                            <p className="text-xs text-gray-400">{group.product?.product_code}</p>
                           </div>
-                          <span className="text-lg font-bold text-blue-600">{qty.toLocaleString()}<span className="text-xs font-normal text-gray-400 ml-1">개</span></span>
+                          <span className="text-sm font-bold text-blue-600 shrink-0 ml-1">{qty.toLocaleString()}<span className="text-xs font-normal text-gray-400">개</span></span>
                         </div>
                       )
                     })}
@@ -482,21 +482,21 @@ export default function Home() {
             </div>
 
             {/* 최근 입출고 */}
-            <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100">
-              <div className="p-5 border-b border-gray-100">
-                <h2 className="text-base font-semibold text-gray-900">최근 입출고</h2>
+            <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100">
+              <div className="p-3 md:p-5 border-b border-gray-100">
+                <h2 className="text-sm font-semibold text-gray-900">최근 입출고</h2>
               </div>
-              <div className="p-5">
+              <div className="p-3 md:p-5">
                 {transactions.length === 0 ? (
                   <p className="text-gray-400 text-sm text-center py-8">입출고 기록이 없습니다.</p>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-2">
                     {transactions.map(tx => {
                       const isTransfer = tx.type === '이동' || tx.note?.includes('[이동]')
                       const displayType = isTransfer ? '이동' : tx.type
                       return (
-                        <div key={tx.id} className="flex items-center gap-3">
-                          <span className={`w-14 text-center shrink-0 text-xs font-semibold px-2 py-1 rounded-full ${
+                        <div key={tx.id} className="flex items-center gap-2">
+                          <span className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded ${
                             isTransfer ? 'bg-blue-100 text-blue-700'
                             : tx.type === '입고' ? 'bg-emerald-100 text-emerald-700'
                             : 'bg-red-100 text-red-700'
@@ -504,13 +504,13 @@ export default function Home() {
                             {displayType}
                           </span>
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 truncate">{tx.products?.product_name}</p>
+                            <p className="text-xs font-medium text-gray-900 truncate">{tx.products?.product_name}</p>
                             <p className="text-xs text-gray-400 truncate">
                               {tx.channel || tx.warehouses?.name || '-'}
                             </p>
                           </div>
                           <div className="text-right shrink-0">
-                            <p className={`text-sm font-bold ${
+                            <p className={`text-xs font-bold ${
                               isTransfer ? 'text-blue-600'
                               : tx.type === '입고' ? 'text-emerald-600'
                               : 'text-red-600'
