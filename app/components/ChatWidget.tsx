@@ -908,14 +908,6 @@ export default function ChatWidget() {
 
   return (
     <>
-      {/* 모바일 배경 오버레이 */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/40 z-40 md:hidden"
-          onClick={() => setIsOpen(false)}
-        />
-      )}
-
       {/* 채팅 버튼 */}
       <button
         onClick={() => setIsOpen(!isOpen)}
@@ -924,15 +916,15 @@ export default function ChatWidget() {
         {isOpen ? '✕' : '💬'}
       </button>
 
-      {/* 채팅 창 - 모바일: 하단 풀스크린 / 데스크탑: 우측 하단 팝업 */}
+      {/* 채팅 창 */}
       {isOpen && (
-        <div className="fixed inset-x-0 bottom-0 h-[85vh] md:inset-auto md:bottom-24 md:right-6 md:w-96 md:h-[500px] bg-white rounded-t-2xl md:rounded-lg shadow-2xl flex flex-col z-50 border">
+        <div className="fixed bottom-24 right-4 w-[320px] sm:w-96 h-[480px] bg-white rounded-lg shadow-2xl flex flex-col z-50 border">
           {/* 헤더 */}
-          <div className="bg-blue-600 text-white p-4 md:p-3 rounded-t-2xl md:rounded-t-lg flex items-center justify-between shrink-0">
-            <h3 className="font-semibold">AI 재고관리 어시스턴트</h3>
+          <div className="bg-blue-600 text-white p-3 rounded-t-lg flex items-center justify-between shrink-0">
+            <h3 className="font-semibold text-sm">AI 재고관리 어시스턴트</h3>
             <button
               onClick={() => setIsOpen(false)}
-              className="md:hidden text-white/80 hover:text-white text-xl leading-none"
+              className="text-white/80 hover:text-white text-lg leading-none"
             >
               ✕
             </button>
@@ -978,7 +970,6 @@ export default function ChatWidget() {
               placeholder="입고/출고/이동 요청 입력..."
               className="flex-1 border rounded-lg px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={loading}
-              autoFocus
             />
             <button
               type="submit"
