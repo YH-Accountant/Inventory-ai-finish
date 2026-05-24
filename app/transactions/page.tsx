@@ -973,16 +973,16 @@ export default function TransactionsPage() {
 
         {/* 입출고 기록 목록 */}
         <div className="bg-white rounded-lg shadow">
-          <div className="p-6 border-b">
-            <h2 className="text-xl font-semibold">입출고 기록 ({transactions.length}건)</h2>
+          <div className="p-3 md:p-6 border-b">
+            <h2 className="text-base md:text-xl font-semibold">입출고 기록 ({transactions.length}건)</h2>
           </div>
-          <div className="p-6">
+          <div className="p-3 md:p-6">
             {transactions.length === 0 ? (
               <p className="text-gray-500 text-center py-8">
                 입출고 기록이 없습니다.
               </p>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-1">
                 {transactions.map((tx) => {
                   // 내부 이동인지 확인 (type이 '이동'이거나, note에 [이동] 또는 [샘플(이동)] 포함)
                   const isTransfer = tx.type === '이동' || tx.note?.includes('[이동]') || tx.note?.includes('[샘플(이동)]')
@@ -1060,13 +1060,13 @@ export default function TransactionsPage() {
                           {isTransfer ? '↔' : tx.type === '입고' ? '+' : tx.type === '조정' ? (tx.quantity >= 0 ? '+' : '') : '-'}{tx.quantity.toLocaleString()}개
                         </p>
                         {tx.resulting_quantity !== null && tx.resulting_quantity !== undefined && (
-                          <p className="text-xs text-gray-400">{tx.warehouses?.name} 잔액: {tx.resulting_quantity.toLocaleString()}개</p>
+                          <p className="text-xs text-gray-400">잔액 {tx.resulting_quantity.toLocaleString()}개</p>
                         )}
-                        <p className="text-sm text-gray-500">
+                        <p className="text-xs text-gray-500">
                           {new Date(tx.created_at).toLocaleDateString('ko-KR')}
                         </p>
                         {tx.recorded_by && (
-                          <p className="text-sm text-gray-400">{tx.recorded_by}</p>
+                          <p className="text-xs text-gray-400">{tx.recorded_by}</p>
                         )}
                       </div>
                       <button
