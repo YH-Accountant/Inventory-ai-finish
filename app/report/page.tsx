@@ -287,32 +287,32 @@ export default function ReportPage() {
   function renderReport(text: string) {
     return text.split('\n').map((line, i) => {
       if (line.startsWith('### ')) {
-        return <h3 key={i} className="text-lg font-bold text-gray-800 mt-6 mb-2">{line.replace('### ', '')}</h3>
+        return <h3 key={i} className="text-xs font-bold text-gray-800 mt-3 mb-1">{line.replace('### ', '')}</h3>
       }
       if (line.startsWith('## ')) {
-        return <h2 key={i} className="text-xl font-bold text-gray-900 mt-6 mb-3">{line.replace('## ', '')}</h2>
+        return <h2 key={i} className="text-sm font-bold text-gray-900 mt-3 mb-1">{line.replace('## ', '')}</h2>
       }
       if (line.startsWith('**') && line.endsWith('**')) {
-        return <p key={i} className="font-semibold text-gray-800 mt-2">{line.replace(/\*\*/g, '')}</p>
+        return <p key={i} className="text-xs font-semibold text-gray-800 mt-1">{line.replace(/\*\*/g, '')}</p>
       }
       if (line.startsWith('- ') || line.startsWith('* ')) {
         const content = line.slice(2)
         const isWarning = content.includes('→ 권고')
         return (
-          <li key={i} className={`ml-4 list-disc ${isWarning ? 'text-orange-600 font-medium' : 'text-gray-700'}`}>
+          <li key={i} className={`ml-3 list-disc text-xs ${isWarning ? 'text-orange-600 font-medium' : 'text-gray-700'}`}>
             {content}
           </li>
         )
       }
-      if (line.trim() === '') return <div key={i} className="h-1" />
-      return <p key={i} className="text-gray-700">{line}</p>
+      if (line.trim() === '') return <div key={i} className="h-0.5" />
+      return <p key={i} className="text-xs text-gray-700">{line}</p>
     })
   }
 
   return (
     <>
       <Navbar />
-      <div className="min-h-screen bg-slate-50 pt-24 md:pt-20 p-4 md:p-6">
+      <div className="min-h-screen bg-slate-50 pt-28 md:pt-20 p-3 md:p-6">
       <div className="max-w-5xl mx-auto">
 
         {/* Header */}
@@ -346,46 +346,46 @@ export default function ReportPage() {
 
         {/* 차트 섹션 (항상 표시) */}
         {warehouseChartData.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
 
             {/* 창고별 재고 */}
-            <div className="bg-white rounded-xl shadow p-5">
-              <h3 className="text-base font-semibold text-gray-800 mb-4">창고별 재고 현황</h3>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={warehouseChartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+            <div className="bg-white rounded-xl shadow p-3">
+              <h3 className="text-xs font-semibold text-gray-700 mb-2">창고별 재고 현황</h3>
+              <ResponsiveContainer width="100%" height={150}>
+                <BarChart data={warehouseChartData} margin={{ top: 3, right: 8, left: 0, bottom: 3 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} />
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
                   <Tooltip formatter={(v) => [`${Number(v).toLocaleString()}개`, '재고']} />
-                  <Bar dataKey="재고" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="재고" fill="#3b82f6" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
             {/* 채널별 출고 (리포트 생성 후) */}
             {generated && channelChartData.length > 0 ? (
-              <div className="bg-white rounded-xl shadow p-5">
-                <h3 className="text-base font-semibold text-gray-800 mb-4">이번 달 채널별 출고</h3>
-                <ResponsiveContainer width="100%" height={220}>
+              <div className="bg-white rounded-xl shadow p-3">
+                <h3 className="text-xs font-semibold text-gray-700 mb-2">이번 달 채널별 출고</h3>
+                <ResponsiveContainer width="100%" height={150}>
                   <PieChart>
-                    <Pie data={channelChartData} dataKey="출고" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}>
+                    <Pie data={channelChartData} dataKey="출고" nameKey="name" cx="50%" cy="50%" outerRadius={55} label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}>
                       {channelChartData.map((_, idx) => (
                         <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
                       ))}
                     </Pie>
                     <Tooltip formatter={(v) => [`${Number(v).toLocaleString()}개`, '출고']} />
-                    <Legend />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
             ) : generated && channelChartData.length === 0 ? (
-              <div className="bg-white rounded-xl shadow p-5 flex items-center justify-center text-gray-400">
+              <div className="bg-white rounded-xl shadow p-3 flex items-center justify-center text-gray-400 text-xs">
                 이번 달 출고 데이터 없음
               </div>
             ) : (
-              <div className="bg-white rounded-xl shadow p-5 flex flex-col items-center justify-center text-gray-400 gap-2">
-                <span className="text-4xl">📊</span>
-                <p className="text-sm">AI 리포트 생성 후<br />채널별 출고 차트가 표시됩니다</p>
+              <div className="bg-white rounded-xl shadow p-3 flex flex-col items-center justify-center text-gray-400 gap-1">
+                <span className="text-2xl">📊</span>
+                <p className="text-xs text-center">AI 리포트 생성 후<br />채널별 출고 차트가 표시됩니다</p>
               </div>
             )}
           </div>
@@ -393,47 +393,39 @@ export default function ReportPage() {
 
         {/* KPI 카드 (리포트 생성 후) */}
         {kpi && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div className="grid grid-cols-3 gap-2 mb-3">
             {/* 폐기 예상 손실액 */}
-            <div className="bg-white rounded-xl shadow p-5 border-l-4 border-red-400">
-              <p className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-1">폐기 예상 손실액</p>
-              <p className="text-2xl font-bold text-gray-900">
+            <div className="bg-white rounded-lg shadow p-2.5 border-l-4 border-red-400">
+              <p className="text-xs font-semibold text-red-500 mb-0.5 leading-tight">폐기 손실</p>
+              <p className="text-sm font-bold text-gray-900 leading-tight">
                 {kpi.expiryLossAmount > 0
                   ? `${Math.round(kpi.expiryLossAmount / 10000).toLocaleString()}만원`
                   : '없음'}
               </p>
-              <p className="text-xs text-gray-400 mt-1">
-                {kpi.expiryLossAmount > 0
-                  ? `임박/만료 재고 × 원가 기준`
-                  : '임박/만료 재고 없음'}
+              <p className="text-xs text-gray-400 mt-0.5 leading-tight">
+                {kpi.expiryLossAmount > 0 ? `임박/만료×원가` : '임박 없음'}
               </p>
             </div>
 
             {/* 발주 긴급 */}
-            <div className={`bg-white rounded-xl shadow p-5 border-l-4 ${kpi.urgentOrderCount > 0 ? 'border-amber-400' : 'border-green-400'}`}>
-              <p className={`text-xs font-semibold uppercase tracking-wide mb-1 ${kpi.urgentOrderCount > 0 ? 'text-amber-500' : 'text-green-500'}`}>발주 긴급</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {kpi.urgentOrderCount > 0 ? `${kpi.urgentOrderCount}개 품목` : '이상 없음'}
+            <div className={`bg-white rounded-lg shadow p-2.5 border-l-4 ${kpi.urgentOrderCount > 0 ? 'border-amber-400' : 'border-green-400'}`}>
+              <p className={`text-xs font-semibold mb-0.5 leading-tight ${kpi.urgentOrderCount > 0 ? 'text-amber-500' : 'text-green-500'}`}>발주 긴급</p>
+              <p className="text-sm font-bold text-gray-900 leading-tight">
+                {kpi.urgentOrderCount > 0 ? `${kpi.urgentOrderCount}품목` : '이상없음'}
               </p>
-              <p className="text-xs text-gray-400 mt-1">
-                {kpi.urgentOrderCount > 0
-                  ? `최단 소진 예상 D-${kpi.urgentOrderDays}일`
-                  : '30일 이내 소진 임박 없음'}
+              <p className="text-xs text-gray-400 mt-0.5 leading-tight">
+                {kpi.urgentOrderCount > 0 ? `D-${kpi.urgentOrderDays}일` : '30일↑ 안전'}
               </p>
             </div>
 
             {/* 최고 마진 채널 */}
-            <div className="bg-white rounded-xl shadow p-5 border-l-4 border-blue-400">
-              <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-1">최고 마진 채널</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {kpi.bestChannelName !== '-'
-                  ? kpi.bestChannelName
-                  : '기획 없음'}
+            <div className="bg-white rounded-lg shadow p-2.5 border-l-4 border-blue-400">
+              <p className="text-xs font-semibold text-blue-500 mb-0.5 leading-tight">마진채널</p>
+              <p className="text-sm font-bold text-gray-900 leading-tight truncate">
+                {kpi.bestChannelName !== '-' ? kpi.bestChannelName : '기획없음'}
               </p>
-              <p className="text-xs text-gray-400 mt-1">
-                {kpi.bestChannelMargin > 0
-                  ? `마진율 ${(kpi.bestChannelMargin * 100).toFixed(1)}% (기획세트 기준)`
-                  : '기획세트 원가 데이터 부족'}
+              <p className="text-xs text-gray-400 mt-0.5 leading-tight">
+                {kpi.bestChannelMargin > 0 ? `${(kpi.bestChannelMargin * 100).toFixed(1)}%` : '데이터부족'}
               </p>
             </div>
           </div>
@@ -441,68 +433,68 @@ export default function ReportPage() {
 
         {/* Stats 카드 (리포트 생성 후) */}
         {stats && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-white rounded-xl shadow p-4">
-              <p className="text-xs text-gray-500 mb-1">총 재고</p>
-              <p className="text-2xl font-bold text-gray-900">{stats.totalStock.toLocaleString()}</p>
-              <p className="text-xs text-gray-400 mt-1">개</p>
+          <div className="grid grid-cols-4 gap-2 mb-3">
+            <div className="bg-white rounded-lg shadow p-2">
+              <p className="text-xs text-gray-500 leading-tight">총 재고</p>
+              <p className="text-base font-bold text-gray-900">{stats.totalStock.toLocaleString()}</p>
+              <p className="text-xs text-gray-400">개</p>
             </div>
-            <div className="bg-white rounded-xl shadow p-4">
-              <p className="text-xs text-gray-500 mb-1">{stats.monthLabel} 출고</p>
-              <p className="text-2xl font-bold text-blue-600">{stats.totalOutbound.toLocaleString()}</p>
-              <p className="text-xs text-gray-400 mt-1">개</p>
+            <div className="bg-white rounded-lg shadow p-2">
+              <p className="text-xs text-gray-500 leading-tight">{stats.monthLabel} 출고</p>
+              <p className="text-base font-bold text-blue-600">{stats.totalOutbound.toLocaleString()}</p>
+              <p className="text-xs text-gray-400">개</p>
             </div>
-            <div className="bg-white rounded-xl shadow p-4">
-              <p className="text-xs text-gray-500 mb-1">임박/만료 상품</p>
-              <p className={`text-2xl font-bold ${stats.expiringCount > 0 ? 'text-red-500' : 'text-green-500'}`}>
+            <div className="bg-white rounded-lg shadow p-2">
+              <p className="text-xs text-gray-500 leading-tight">임박/만료</p>
+              <p className={`text-base font-bold ${stats.expiringCount > 0 ? 'text-red-500' : 'text-green-500'}`}>
                 {stats.expiringCount}
               </p>
-              <p className="text-xs text-gray-400 mt-1">로트</p>
+              <p className="text-xs text-gray-400">로트</p>
             </div>
-            <div className="bg-white rounded-xl shadow p-4">
-              <p className="text-xs text-gray-500 mb-1">발주 권고</p>
-              <p className={`text-2xl font-bold ${stats.orderRecommendationCount > 0 ? 'text-amber-500' : 'text-green-500'}`}>
+            <div className="bg-white rounded-lg shadow p-2">
+              <p className="text-xs text-gray-500 leading-tight">발주 권고</p>
+              <p className={`text-base font-bold ${stats.orderRecommendationCount > 0 ? 'text-amber-500' : 'text-green-500'}`}>
                 {stats.orderRecommendationCount}
               </p>
-              <p className="text-xs text-gray-400 mt-1">품목</p>
+              <p className="text-xs text-gray-400">품목</p>
             </div>
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
 
           {/* AI 리포트 텍스트 */}
           <div className="md:col-span-2">
             {loading ? (
-              <div className="bg-white rounded-xl shadow p-8 flex flex-col items-center justify-center gap-4 min-h-[300px]">
-                <svg className="animate-spin w-10 h-10 text-blue-500" viewBox="0 0 24 24" fill="none">
+              <div className="bg-white rounded-xl shadow p-6 flex flex-col items-center justify-center gap-3 min-h-[200px]">
+                <svg className="animate-spin w-7 h-7 text-blue-500" viewBox="0 0 24 24" fill="none">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                 </svg>
-                <p className="text-gray-500">AI가 재고 데이터를 분석하고 있습니다...</p>
+                <p className="text-gray-500 text-sm">AI가 분석 중입니다...</p>
               </div>
             ) : report ? (
-              <div className="bg-white rounded-xl shadow p-6">
-                <div className="flex items-center gap-2 mb-4 pb-4 border-b">
-                  <span className="text-blue-600 text-xl">AI</span>
-                  <h2 className="text-lg font-bold text-gray-900">AI 분석 리포트</h2>
-                  <span className="ml-auto text-xs text-gray-400">{new Date().toLocaleDateString('ko-KR')} 기준</span>
+              <div className="bg-white rounded-xl shadow p-3">
+                <div className="flex items-center gap-2 mb-2 pb-2 border-b">
+                  <span className="text-blue-600 text-sm font-bold">AI</span>
+                  <h2 className="text-sm font-bold text-gray-900">AI 분석 리포트</h2>
+                  <span className="ml-auto text-xs text-gray-400">{new Date().toLocaleDateString('ko-KR')}</span>
                 </div>
-                <div className="space-y-1 leading-relaxed">
+                <div className="space-y-0.5 leading-snug">
                   {renderReport(report)}
                 </div>
               </div>
             ) : (
-              <div className="bg-white rounded-xl shadow p-8 flex flex-col items-center justify-center gap-4 min-h-[300px] text-center">
-                <span className="text-6xl">📋</span>
-                <h3 className="text-lg font-semibold text-gray-700">AI 리포트를 생성하세요</h3>
-                <p className="text-gray-400 text-sm">
-                  현재 재고 현황, 유통기한 임박 상품,<br />
+              <div className="bg-white rounded-xl shadow p-5 flex flex-col items-center justify-center gap-3 min-h-[200px] text-center">
+                <span className="text-4xl">📋</span>
+                <h3 className="text-sm font-semibold text-gray-700">AI 리포트를 생성하세요</h3>
+                <p className="text-gray-400 text-xs">
+                  재고 현황, 유통기한 임박 상품,<br />
                   이번 달 출고 현황을 AI가 분석합니다
                 </p>
                 <button
                   onClick={generateReport}
-                  className="mt-2 bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 transition"
+                  className="mt-1 bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition"
                 >
                   리포트 생성하기
                 </button>
@@ -511,45 +503,44 @@ export default function ReportPage() {
           </div>
 
           {/* 임박 상품 목록 */}
-          <div className="bg-white rounded-xl shadow p-5">
-            <h3 className="text-base font-semibold text-gray-800 mb-4 flex items-center gap-2">
+          <div className="bg-white rounded-xl shadow p-3">
+            <h3 className="text-xs font-semibold text-gray-800 mb-2 flex items-center gap-1.5">
               <span>유통기한 임박/만료</span>
               {expiringLots.length > 0 && (
-                <span className="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full font-medium">
+                <span className="bg-red-100 text-red-600 text-xs px-1.5 py-0.5 rounded-full font-medium">
                   {expiringLots.length}건
                 </span>
               )}
             </h3>
             {expiringLots.length === 0 && !generated ? (
-              <p className="text-gray-400 text-sm text-center py-8">리포트 생성 후 표시됩니다</p>
+              <p className="text-gray-400 text-xs text-center py-6">리포트 생성 후 표시됩니다</p>
             ) : expiringLots.length === 0 ? (
-              <div className="text-center py-8">
-                <p className="text-green-500 text-2xl mb-2">✓</p>
-                <p className="text-gray-500 text-sm">임박/만료 상품 없음</p>
+              <div className="text-center py-6">
+                <p className="text-green-500 text-lg mb-1">✓</p>
+                <p className="text-gray-500 text-xs">임박/만료 상품 없음</p>
               </div>
             ) : (
-              <div className="space-y-3 max-h-[500px] overflow-y-auto">
+              <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
                 {expiringLots.map((lot, idx) => (
-                  <div key={idx} className={`p-3 rounded-lg border ${
+                  <div key={idx} className={`p-2 rounded-lg border ${
                     lot.status === 'expired'
                       ? 'bg-red-50 border-red-200'
                       : 'bg-orange-50 border-orange-200'
                   }`}>
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start justify-between gap-1">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-800 truncate">{lot.productName}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">LOT: {lot.lotNumber}</p>
-                        <p className="text-xs text-gray-500">{lot.warehouseName}</p>
+                        <p className="text-xs font-medium text-gray-800 truncate">{lot.productName}</p>
+                        <p className="text-xs text-gray-400">{lot.lotNumber} · {lot.warehouseName}</p>
                       </div>
                       <div className="text-right shrink-0">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${
                           lot.status === 'expired'
                             ? 'bg-red-100 text-red-700'
                             : 'bg-orange-100 text-orange-700'
                         }`}>
                           {lot.status === 'expired' ? '만료' : `D-${lot.daysLeft}`}
                         </span>
-                        <p className="text-xs text-gray-500 mt-1">{lot.quantity.toLocaleString()}개</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{lot.quantity.toLocaleString()}개</p>
                       </div>
                     </div>
                   </div>

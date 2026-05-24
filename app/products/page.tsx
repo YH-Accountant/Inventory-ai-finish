@@ -124,7 +124,7 @@ export default function ProductsPage() {
   return (
     <>
       <Navbar />
-      <div className="min-h-screen bg-slate-50 pt-24 md:pt-20 p-4 md:p-8">
+      <div className="min-h-screen bg-slate-50 pt-28 md:pt-20 p-4 md:p-8">
       <div className="max-w-6xl mx-auto">
         {/* 헤더 */}
         <div className="flex flex-wrap justify-between items-start gap-3 mb-6">
