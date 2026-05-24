@@ -1005,7 +1005,7 @@ export default function TransactionsPage() {
                   }
 
                   return (
-                  <div key={tx.id} className="flex items-center justify-between border-b py-2">
+                  <div key={tx.id} className="flex items-center justify-between border-b py-1">
                     <div className="flex items-center gap-2">
                       <span className={`px-2 py-0.5 rounded text-xs font-medium shrink-0 ${
                         isTransfer
