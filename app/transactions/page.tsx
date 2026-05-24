@@ -1029,7 +1029,7 @@ export default function TransactionsPage() {
                           )}
                         </p>
                         {isTransfer && additionalNote && (
-                          <p className="text-sm text-gray-400">메모: {additionalNote}</p>
+                          <p className="text-xs text-gray-400">메모: {additionalNote}</p>
                         )}
                         {!isTransfer && (() => {
                           const lotMatch = tx.note?.match(/\[로트\] (.+)$/)
@@ -1039,7 +1039,7 @@ export default function TransactionsPage() {
                             : null
                           return (
                             <>
-                              {userNote && <p className="text-sm text-gray-400">메모: {userNote}</p>}
+                              {userNote && <p className="text-xs text-gray-400">메모: {userNote}</p>}
                               {lotInfo && <p className="text-xs text-gray-400">{lotInfo}</p>}
                             </>
                           )
@@ -1065,9 +1065,6 @@ export default function TransactionsPage() {
                         <p className="text-xs text-gray-500">
                           {new Date(tx.created_at).toLocaleDateString('ko-KR')}
                         </p>
-                        {tx.recorded_by && (
-                          <p className="text-xs text-gray-400">{tx.recorded_by}</p>
-                        )}
                       </div>
                       <button
                         onClick={() => handleDelete(tx)}
