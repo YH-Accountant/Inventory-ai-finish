@@ -247,11 +247,11 @@ export default function ChatWidget() {
       availableWarehouses = warehouses
     } else {
       // 출고/이동: 최신 재고를 직접 조회해서 재고 있는 창고만 선별
+      // company_id 필터 없이 product_id(UUID)로만 특정 — RLS가 회사 데이터 보호
       const { data: freshInv } = await supabase
         .from('inventory')
         .select('warehouse_id')
         .eq('product_id', confirmedProduct.id)
-        .eq('company_id', profile?.company_id)
         .gt('quantity', 0)
 
       const warehouseIds = [...new Set((freshInv || []).map((inv: { warehouse_id: string }) => inv.warehouse_id))]

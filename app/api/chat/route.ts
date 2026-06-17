@@ -135,7 +135,7 @@ async function executeTool(name: string, args: Record<string, string>, companyId
     const { data } = await supabase
       .from('inventory')
       .select('quantity, lot_number, products(product_name, product_code, shelf_life_months), warehouses(name)')
-      .eq('company_id', companyId)
+      .or(`company_id.eq.${companyId},company_id.is.null`)
       .gt('quantity', 0)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -412,7 +412,8 @@ export async function POST(request: Request) {
     const systemPrompt = `당신은 재고관리 AI 어시스턴트입니다. 오늘: ${todayStr}
 
 ## 도구 활용 원칙
-- 입고/출고/창고이동 요청 → tool 절대 호출 금지. 사용자 말만 파싱해서 바로 action JSON 반환
+- 입고/출고/창고이동 요청 → tool 절대 호출 금지 (get_inventory, get_products 등 어떤 tool도 호출 금지). 사용자 말만 파싱해서 바로 action JSON 반환
+- 재고 확인 없이 바로 action 반환 — 재고 부족 여부는 시스템이 처리함
 - 재고 조회, 유통기한, 출고 현황, 발주 분석 등 정보성 질문 → 적절한 tool 호출 후 답변
 - 사용자가 "본사에 보내줘", "관리자에게 전달해줘", "위에 보고해줘", "이메일 발송" 등 요청 시 → 이메일 주소 절대 묻지 말고 즉시 send_email_to_manager 호출 (수신자는 tool이 DB에서 자동으로 찾음)
 - 이메일 발송 시 사용자가 원하는 내용(일부만, 특정 섹션, 추가 코멘트 포함 등)을 정확히 반영해서 content 구성
