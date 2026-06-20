@@ -48,7 +48,8 @@ export default function ProductsPage() {
     product_code: '',
     version: '일반',
     unit_cost: 0,
-    channel: ''
+    channel: '',
+    track_expiry: true
   })
 
   useEffect(() => {
@@ -81,12 +82,11 @@ export default function ProductsPage() {
     const { error } = await supabase.from('products').insert([{
       ...formData,
       unit_cost: Number(formData.unit_cost),
-      company_id: profile?.company_id,
-      track_expiry: true
+      company_id: profile?.company_id
     }])
     if (error) { alert('등록 실패: ' + error.message); return }
     alert('제품이 등록되었습니다!')
-    setFormData({ product_group: '', product_name: '', product_code: '', version: '일반', unit_cost: 0, channel: '' })
+    setFormData({ product_group: '', product_name: '', product_code: '', version: '일반', unit_cost: 0, channel: '', track_expiry: true })
     setShowForm(false)
     fetchProducts()
   }
@@ -235,6 +235,50 @@ export default function ProductsPage() {
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
+              {/* 유통기한 관리 토글 + 제품군 상속 추천 */}
+              <div className="md:col-span-2">
+                {(() => {
+                  const g = formData.product_group.trim()
+                  const n = formData.product_name.trim()
+                  const groupProds = g ? products.filter(p => p.product_group === g) : []
+                  const offCount = groupProds.filter(p => !p.track_expiry).length
+                  const groupSuggestsOff = groupProds.length > 0 && offCount >= groupProds.length / 2
+                  const isSetKeyword = hasSetKeyword(n)
+                  return (
+                    <>
+                      {isSetKeyword && (
+                        <div className="mb-2 px-3 py-2 bg-orange-50 border border-orange-200 rounded-lg text-xs text-orange-800">
+                          제품명에 세트/기획 키워드가 포함되어 있습니다. 내용물에 화장품이 포함될 수 있으니 유통기한 관리를 직접 확인하세요.
+                        </div>
+                      )}
+                      {!isSetKeyword && groupSuggestsOff && (
+                        <div className="mb-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                          <span className="font-semibold">{g}</span> 제품군의 기존 제품은 유통기한 관리 <span className="font-bold">OFF</span>로 설정되어 있습니다.
+                          필요시 아래에서 변경하세요.
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between p-3 border rounded-lg bg-gray-50">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">유통기한 관리</p>
+                          <p className="text-xs text-gray-400 mt-0.5">기본값은 ON. 비소모품 단품일 경우에만 OFF로 변경하세요.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFormData(f => ({ ...f, track_expiry: !f.track_expiry }))}
+                          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${
+                            formData.track_expiry
+                              ? 'bg-blue-600 text-white hover:bg-blue-700'
+                              : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                          }`}
+                        >
+                          {formData.track_expiry ? 'ON' : 'OFF'}
+                        </button>
+                      </div>
+                    </>
+                  )
+                })()}
+              </div>
+
               <div className="md:col-span-2">
                 <button type="submit" className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition font-medium">
                   등록하기

@@ -54,6 +54,13 @@ interface DetectedWarehouse {
   column: string    // 엑셀 컬럼명 (예: "충주창고재고")
 }
 
+// 세트/기획 가능성 키워드
+const SET_KEYWORDS = ['기획', '세트', '증정', '콜라보', '한정판', '에디션', '패키지', '선물', '기프트']
+function hasSetKeyword(name: string): boolean {
+  const lower = name.toLowerCase()
+  return SET_KEYWORDS.some(kw => lower.includes(kw))
+}
+
 // 날짜를 로트번호 형식으로 변환 (YYMMDD-01)
 function dateToLotNumber(dateValue: string | number | Date | undefined): string | null {
   if (!dateValue) return null
@@ -508,23 +515,73 @@ export default function UploadPage() {
     setUserConfirmedOff(new Set())
     console.log('➡️ [단계] 3단계(미리보기)로 이동')
 
-    // AI 분류 호출 (백그라운드)
+    // AI 분류 + 제품군 상속 병합
     const uniqueNames = [...new Set(parsed.map(p => p.product_name).filter(Boolean))]
     if (uniqueNames.length > 0) {
       setAiClassifying(true)
       try {
-        const res = await fetch('/api/classify-products', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ productNames: uniqueNames })
-        })
-        if (res.ok) {
-          const data = await res.json()
-          setAiSuggestOff(data.suggest_off || [])
-          setAiNeedsReview(data.needs_review || [])
+        // 1. AI 분류 호출
+        const [aiRes, existingRes] = await Promise.all([
+          fetch('/api/classify-products', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ productNames: uniqueNames })
+          }),
+          // 2. 기존 제품 그룹 상속 정보 조회
+          supabase
+            .from('products')
+            .select('product_group, track_expiry')
+            .eq('company_id', profile?.company_id || '')
+        ])
+
+        // 제품군 OFF 집합 계산 (과반수 OFF인 그룹)
+        const groupOffGroups = new Set<string>()
+        if (existingRes.data) {
+          const counts: Record<string, { on: number; off: number }> = {}
+          existingRes.data.forEach((p: { product_group: string; track_expiry: boolean }) => {
+            const g = p.product_group || ''
+            if (!counts[g]) counts[g] = { on: 0, off: 0 }
+            if (p.track_expiry) counts[g].on++
+            else counts[g].off++
+          })
+          Object.entries(counts).forEach(([g, { on, off }]) => {
+            if (off > on) groupOffGroups.add(g)
+          })
         }
+
+        // 세트 키워드 포함 제품 (최우선 — 상속/AI 모두 override)
+        const setKeywordNames = new Set(parsed.filter(p => hasSetKeyword(p.product_name)).map(p => p.product_name))
+
+        // 제품군 상속으로 OFF 추천 (세트 키워드 없는 경우만)
+        const groupOffNames = new Set(
+          parsed
+            .filter(p => groupOffGroups.has(p.product_group || '') && !hasSetKeyword(p.product_name))
+            .map(p => p.product_name)
+        )
+
+        // AI 결과
+        let aiData = { suggest_off: [] as string[], needs_review: [] as string[] }
+        if (aiRes.ok) aiData = await aiRes.json()
+
+        // 우선순위 병합:
+        // 1. 세트 키워드 → needs_review (최우선)
+        // 2. 그룹 상속 OFF (세트 키워드 없음) → suggest_off (AI보다 우선)
+        // 3. AI suggest_off (세트 키워드 없음) → suggest_off
+        // 4. AI needs_review → needs_review (suggest_off와 중복 제외)
+        const finalSuggestOff = [...new Set([
+          ...groupOffNames,
+          ...(aiData.suggest_off || []).filter((n: string) => !hasSetKeyword(n))
+        ])].filter(n => !setKeywordNames.has(n))
+
+        const finalNeedsReview = [...new Set([
+          ...setKeywordNames,
+          ...(aiData.needs_review || [])
+        ])].filter(n => !finalSuggestOff.includes(n))
+
+        setAiSuggestOff(finalSuggestOff)
+        setAiNeedsReview(finalNeedsReview)
       } catch (e) {
-        console.error('AI 분류 에러:', e)
+        console.error('분류 에러:', e)
       } finally {
         setAiClassifying(false)
       }
@@ -1347,7 +1404,7 @@ export default function UploadPage() {
             {!aiClassifying && aiSuggestOff.length > 0 && (
               <div className="bg-amber-50 border border-amber-300 rounded-lg p-4 mb-3">
                 <h3 className="text-sm font-semibold text-amber-800 mb-1">유통기한 관리 OFF 추천 ({aiSuggestOff.length}건)</h3>
-                <p className="text-xs text-amber-700 mb-3">아래 제품은 비소모품으로 판단됩니다. OFF로 설정할 제품을 선택하세요. <span className="font-bold">기본값은 ON</span>이며, AI가 자동으로 끄지 않습니다.</p>
+                <p className="text-xs text-amber-700 mb-3">AI 분석 또는 제품군 기존 설정(상속) 기준으로 OFF 추천됩니다. OFF로 설정할 제품을 직접 선택하세요. <span className="font-bold">기본값은 ON</span>이며, 체크하지 않으면 ON으로 등록됩니다.</p>
                 <div className="space-y-1.5">
                   {aiSuggestOff.map((name) => (
                     <label key={name} className="flex items-center gap-2 cursor-pointer">
