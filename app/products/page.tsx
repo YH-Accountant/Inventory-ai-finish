@@ -358,172 +358,213 @@ export default function ProductsPage() {
             <p className="text-gray-500 text-center">등록된 제품이 없습니다.</p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {groupNames.map(groupName => {
-              const groupProds = grouped[groupName]
-              const onCount = groupProds.filter(p => p.track_expiry).length
-              const offCount = groupProds.length - onCount
-
-              return (
-                <div key={groupName} className="bg-white rounded-lg shadow overflow-hidden">
-                  {/* 제품군 헤더 */}
-                  <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="font-semibold text-gray-800 text-sm">{groupName}</span>
-                      <span className="text-xs text-gray-400 shrink-0">{groupProds.length}개</span>
-                      {onCount > 0 && (
-                        <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded shrink-0">ON {onCount}</span>
-                      )}
-                      {offCount > 0 && (
-                        <span className="text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded shrink-0">OFF {offCount}</span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span className="text-xs text-gray-400 hidden sm:inline">일괄</span>
-                      <button
-                        onClick={() => prepareBulkToggle(groupName, true, groupProds)}
-                        className="text-xs px-2.5 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 transition font-medium"
-                      >
-                        전체 ON
-                      </button>
-                      <button
-                        onClick={() => prepareBulkToggle(groupName, false, groupProds)}
-                        className="text-xs px-2.5 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition font-medium"
-                      >
-                        전체 OFF
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 모바일 */}
-                  <div className="md:hidden divide-y">
-                    {groupProds.map(product => (
-                      <div key={product.id} className={`flex items-center justify-between px-4 py-2.5 ${!product.is_active ? 'opacity-50' : ''}`}>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1">
-                            <span className="font-medium text-sm text-gray-900 truncate">{product.product_name}</span>
-                            {hasSetKeyword(product.product_name) && (
-                              <span className="text-orange-400 text-xs shrink-0" title="세트/기획 가능성">⚠</span>
-                            )}
-                          </div>
-                          <div className="text-xs text-gray-400 mt-0.5">{product.product_code}</div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                          <button
-                            onClick={() => toggleTrackExpiry(product.id, product.track_expiry)}
-                            className={`text-xs px-2 py-0.5 rounded font-medium ${product.track_expiry ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-500'}`}
-                          >
-                            {product.track_expiry ? 'ON' : 'OFF'}
-                          </button>
-                          <button
-                            onClick={() => toggleActive(product.id, product.is_active)}
-                            className={`text-xs px-2 py-0.5 rounded font-medium ${product.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}
-                          >
-                            {product.is_active ? '활성' : '비활성'}
-                          </button>
-                        </div>
+          <>
+            {/* 모바일 (카드형) */}
+            <div className="md:hidden space-y-4">
+              {groupNames.map(groupName => {
+                const groupProds = grouped[groupName]
+                const onCount = groupProds.filter(p => p.track_expiry).length
+                const offCount = groupProds.length - onCount
+                return (
+                  <div key={groupName} className="bg-white rounded-lg shadow overflow-hidden">
+                    <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-semibold text-gray-800 text-sm">{groupName}</span>
+                        <span className="text-xs text-gray-400 shrink-0">{groupProds.length}개</span>
+                        {onCount > 0 && (
+                          <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded shrink-0">ON {onCount}</span>
+                        )}
+                        {offCount > 0 && (
+                          <span className="text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded shrink-0">OFF {offCount}</span>
+                        )}
                       </div>
-                    ))}
-                  </div>
-
-                  {/* 데스크탑 테이블 */}
-                  <div className="hidden md:block overflow-x-auto">
-                    <table className="w-full min-w-[580px]">
-                      <thead>
-                        <tr className="text-left text-xs text-gray-400 border-b bg-white">
-                          <th className="py-2 pl-4 pr-2 font-medium">제품명</th>
-                          <th className="py-2 px-2 font-medium">품번</th>
-                          <th className="py-2 px-2 font-medium">버전</th>
-                          <th className="py-2 px-2 font-medium">원가</th>
-                          <th className="py-2 px-2 font-medium">채널</th>
-                          <th className="py-2 px-2 font-medium">유통기한 관리</th>
-                          <th className="py-2 px-2 font-medium">상태</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {groupProds.map(product => (
-                          <tr key={product.id} className={`border-b last:border-b-0 hover:bg-gray-50 ${!product.is_active ? 'opacity-50' : ''}`}>
-                            <td className="py-2.5 pl-4 pr-2 text-sm font-medium text-gray-900">
-                              <span className="flex items-center gap-1">
-                                {product.product_name}
-                                {hasSetKeyword(product.product_name) && (
-                                  <span className="text-orange-400 text-xs" title="세트/기획 가능성 — 일괄 OFF 자동 제외">⚠</span>
-                                )}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-2 text-xs text-gray-500">{product.product_code}</td>
-                            <td className="py-2.5 px-2">
-                              <span className={`px-2 py-0.5 rounded text-xs ${
-                                product.version === '홈쇼핑용' ? 'bg-purple-100 text-purple-800' :
-                                product.version === '라이브커머스용' ? 'bg-orange-100 text-orange-800' :
-                                'bg-gray-100 text-gray-700'
-                              }`}>
-                                {product.version}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-2">
-                              {editingCost?.id === product.id ? (
-                                <div className="flex items-center gap-1">
-                                  <input
-                                    type="number"
-                                    autoFocus
-                                    value={editingCost.value}
-                                    onChange={e => setEditingCost({ id: product.id, value: e.target.value })}
-                                    onBlur={() => saveUnitCost(product.id, editingCost.value)}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') saveUnitCost(product.id, editingCost.value)
-                                      if (e.key === 'Escape') setEditingCost(null)
-                                    }}
-                                    className="w-20 border rounded px-2 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                  />
-                                  <span className="text-xs text-gray-400">원</span>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => setEditingCost({ id: product.id, value: String(product.unit_cost) })}
-                                  className="text-left hover:bg-blue-50 px-2 py-0.5 rounded transition"
-                                >
-                                  {product.unit_cost > 0
-                                    ? <span className="text-sm">{product.unit_cost.toLocaleString()}원</span>
-                                    : <span className="text-xs text-gray-400">미입력</span>
-                                  }
-                                </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-xs text-gray-400">일괄</span>
+                        <button
+                          onClick={() => prepareBulkToggle(groupName, true, groupProds)}
+                          className="text-xs px-2.5 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 transition font-medium"
+                        >
+                          전체 ON
+                        </button>
+                        <button
+                          onClick={() => prepareBulkToggle(groupName, false, groupProds)}
+                          className="text-xs px-2.5 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition font-medium"
+                        >
+                          전체 OFF
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divide-y">
+                      {groupProds.map(product => (
+                        <div key={product.id} className={`flex items-center justify-between px-4 py-2.5 ${!product.is_active ? 'opacity-50' : ''}`}>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1">
+                              <span className="font-medium text-sm text-gray-900 truncate">{product.product_name}</span>
+                              {hasSetKeyword(product.product_name) && (
+                                <span className="text-orange-400 text-xs shrink-0" title="세트/기획 가능성">⚠</span>
                               )}
-                            </td>
-                            <td className="py-2.5 px-2 text-xs text-gray-500">{product.channel || '-'}</td>
-                            <td className="py-2.5 px-2">
-                              <button
-                                onClick={() => toggleTrackExpiry(product.id, product.track_expiry)}
-                                className={`px-3 py-1 rounded text-xs font-medium transition ${
-                                  product.track_expiry
-                                    ? 'bg-blue-100 text-blue-800 hover:bg-blue-200'
-                                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                                }`}
-                              >
-                                {product.track_expiry ? 'ON' : 'OFF'}
-                              </button>
-                            </td>
-                            <td className="py-2.5 px-2">
-                              <button
-                                onClick={() => toggleActive(product.id, product.is_active)}
-                                className={`px-3 py-1 rounded text-xs font-medium transition ${
-                                  product.is_active
-                                    ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                                    : 'bg-red-100 text-red-800 hover:bg-red-200'
-                                }`}
-                              >
-                                {product.is_active ? '활성' : '비활성'}
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                            </div>
+                            <div className="text-xs text-gray-400 mt-0.5">{product.product_code}</div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                            <button
+                              onClick={() => toggleTrackExpiry(product.id, product.track_expiry)}
+                              className={`text-xs px-2 py-0.5 rounded font-medium ${product.track_expiry ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-500'}`}
+                            >
+                              {product.track_expiry ? 'ON' : 'OFF'}
+                            </button>
+                            <button
+                              onClick={() => toggleActive(product.id, product.is_active)}
+                              className={`text-xs px-2 py-0.5 rounded font-medium ${product.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}
+                            >
+                              {product.is_active ? '활성' : '비활성'}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )
-            })}
-          </div>
+                )
+              })}
+            </div>
+
+            {/* 데스크탑 — 전 제품군이 하나의 테이블 공유 (컬럼 정렬 통일) */}
+            <div className="hidden md:block bg-white rounded-lg shadow overflow-hidden overflow-x-auto">
+              <table className="w-full min-w-[700px] table-fixed">
+                <colgroup>
+                  <col style={{ width: '30%' }} />
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '13%' }} />
+                  <col style={{ width: '11%' }} />
+                  <col style={{ width: '12%' }} />
+                  <col style={{ width: '10%' }} />
+                </colgroup>
+                <thead>
+                  <tr className="text-left text-xs text-gray-400 border-b bg-gray-50">
+                    <th className="py-2.5 pl-4 pr-2 font-medium">제품명</th>
+                    <th className="py-2.5 px-2 font-medium">품번</th>
+                    <th className="py-2.5 px-2 font-medium">버전</th>
+                    <th className="py-2.5 px-2 font-medium">원가</th>
+                    <th className="py-2.5 px-2 font-medium">채널</th>
+                    <th className="py-2.5 px-2 font-medium">유통기한 관리</th>
+                    <th className="py-2.5 px-2 font-medium">상태</th>
+                  </tr>
+                </thead>
+                {groupNames.map(groupName => {
+                  const groupProds = grouped[groupName]
+                  const onCount = groupProds.filter(p => p.track_expiry).length
+                  const offCount = groupProds.length - onCount
+                  return (
+                    <tbody key={groupName}>
+                      <tr className="bg-gray-50 border-t border-b border-gray-200">
+                        <td colSpan={7} className="py-2 pl-4 pr-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-gray-700 text-sm">{groupName}</span>
+                              <span className="text-xs text-gray-400">{groupProds.length}개</span>
+                              {onCount > 0 && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">ON {onCount}</span>}
+                              {offCount > 0 && <span className="text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded">OFF {offCount}</span>}
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs text-gray-400">일괄</span>
+                              <button
+                                onClick={() => prepareBulkToggle(groupName, true, groupProds)}
+                                className="text-xs px-2.5 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 transition font-medium"
+                              >
+                                전체 ON
+                              </button>
+                              <button
+                                onClick={() => prepareBulkToggle(groupName, false, groupProds)}
+                                className="text-xs px-2.5 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition font-medium"
+                              >
+                                전체 OFF
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                      {groupProds.map(product => (
+                        <tr key={product.id} className={`border-b hover:bg-gray-50 ${!product.is_active ? 'opacity-50' : ''}`}>
+                          <td className="py-2.5 pl-4 pr-2 text-sm font-medium text-gray-900 overflow-hidden">
+                            <span className="flex items-center gap-1">
+                              <span className="truncate">{product.product_name}</span>
+                              {hasSetKeyword(product.product_name) && (
+                                <span className="text-orange-400 text-xs shrink-0" title="세트/기획 가능성 — 일괄 OFF 자동 제외">⚠</span>
+                              )}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-2 text-xs text-gray-500 truncate">{product.product_code}</td>
+                          <td className="py-2.5 px-2">
+                            <span className={`px-2 py-0.5 rounded text-xs ${
+                              product.version === '홈쇼핑용' ? 'bg-purple-100 text-purple-800' :
+                              product.version === '라이브커머스용' ? 'bg-orange-100 text-orange-800' :
+                              'bg-gray-100 text-gray-700'
+                            }`}>
+                              {product.version}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-2">
+                            {editingCost?.id === product.id ? (
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  autoFocus
+                                  value={editingCost.value}
+                                  onChange={e => setEditingCost({ id: product.id, value: e.target.value })}
+                                  onBlur={() => saveUnitCost(product.id, editingCost.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') saveUnitCost(product.id, editingCost.value)
+                                    if (e.key === 'Escape') setEditingCost(null)
+                                  }}
+                                  className="w-full border rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setEditingCost({ id: product.id, value: String(product.unit_cost) })}
+                                className="text-left hover:bg-blue-50 px-2 py-0.5 rounded transition w-full"
+                              >
+                                {product.unit_cost > 0
+                                  ? <span className="text-sm">{product.unit_cost.toLocaleString()}원</span>
+                                  : <span className="text-xs text-gray-400">미입력</span>
+                                }
+                              </button>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-2 text-xs text-gray-500 truncate">{product.channel || '-'}</td>
+                          <td className="py-2.5 px-2">
+                            <button
+                              onClick={() => toggleTrackExpiry(product.id, product.track_expiry)}
+                              className={`px-3 py-1 rounded text-xs font-medium transition ${
+                                product.track_expiry
+                                  ? 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                              }`}
+                            >
+                              {product.track_expiry ? 'ON' : 'OFF'}
+                            </button>
+                          </td>
+                          <td className="py-2.5 px-2">
+                            <button
+                              onClick={() => toggleActive(product.id, product.is_active)}
+                              className={`px-3 py-1 rounded text-xs font-medium transition ${
+                                product.is_active
+                                  ? 'bg-green-100 text-green-800 hover:bg-green-200'
+                                  : 'bg-red-100 text-red-800 hover:bg-red-200'
+                              }`}
+                            >
+                              {product.is_active ? '활성' : '비활성'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  )
+                })}
+              </table>
+            </div>
+          </>
         )}
 
       </div>
