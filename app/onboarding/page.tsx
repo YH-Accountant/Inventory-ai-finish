@@ -80,12 +80,6 @@ export default function OnboardingPage() {
     router.push('/upload')
   }
 
-  // ── 옵션 C: 일단 시작 ──
-  async function handleJustStart() {
-    await completeOnboarding()
-    router.push('/')
-  }
-
   // ── 옵션 B: 창고 실사 저장 ──
   async function handleStocktakeSave() {
     const validRows = rows.filter(r => r.product_name.trim() && r.quantity > 0 && r.warehouse_name.trim())
@@ -276,20 +270,6 @@ export default function OnboardingPage() {
               </div>
             </button>
 
-            <button
-              onClick={handleJustStart}
-              className="w-full text-left border-2 border-gray-200 hover:border-green-400 rounded-xl p-5 transition group"
-            >
-              <div className="flex items-start gap-4">
-                <span className="text-3xl">⚡</span>
-                <div>
-                  <p className="font-semibold text-gray-900 group-hover:text-green-700">일단 시작할게요</p>
-                  <p className="text-sm text-gray-500 mt-1">오늘부터 들어오고 나가는 것만 기록해요. 재고는 나중에 맞춰도 돼요</p>
-                  <p className="text-xs text-green-500 mt-2">가장 빠르게 시작 가능</p>
-                </div>
-              </div>
-            </button>
-
             <p className="text-center text-xs text-gray-400 mt-4">
               나중에 <span className="font-medium">시작 가이드</span> 메뉴에서 언제든 다시 볼 수 있어요
             </p>
@@ -363,21 +343,13 @@ export default function OnboardingPage() {
               + 행 추가
             </button>
 
-            <div className="flex gap-3">
-              <button
-                onClick={handleStocktakeSave}
-                disabled={saving}
-                className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition"
-              >
-                {saving ? '저장 중...' : '재고 등록 완료'}
-              </button>
-              <button
-                onClick={handleJustStart}
-                className="px-4 py-3 text-sm text-gray-500 hover:text-gray-700 border rounded-lg"
-              >
-                건너뛰기
-              </button>
-            </div>
+            <button
+              onClick={handleStocktakeSave}
+              disabled={saving}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition"
+            >
+              {saving ? '저장 중...' : '재고 등록 완료'}
+            </button>
           </div>
         )}
       </div>

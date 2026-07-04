@@ -7,6 +7,8 @@ import { usePathname } from 'next/navigation'
 
 const NAV_LINKS = [
   { href: '/transactions', label: '입출고' },
+  { href: '/approvals', label: '결재' },
+  { href: '/exceptions', label: '예외리스트' },
   { href: '/products', label: '제품관리' },
   { href: '/lots', label: '로트관리' },
   { href: '/plans', label: '기획관리' },

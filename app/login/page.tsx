@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [name, setName] = useState('')
   const [companyName, setCompanyName] = useState('')
   const [role, setRole] = useState<'본사' | '창고'>('창고')
+  const [position, setPosition] = useState<'관리팀원' | '관리책임자' | '대표'>('관리팀원')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -78,6 +79,7 @@ export default function LoginPage() {
           data: {
             name,
             role,
+            position,
             company_id: companyData.id,
             company_name: companyName.trim()
           }
@@ -96,6 +98,7 @@ export default function LoginPage() {
             email,
             name,
             role,
+            position,
             company_id: companyData.id,
             onboarding_completed: false
           })
@@ -174,6 +177,27 @@ export default function LoginPage() {
                     <span>창고</span>
                   </label>
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  직급 <span className="text-gray-400 font-normal">(결재 승인 권한 판단에 사용)</span>
+                </label>
+                <div className="flex gap-4 flex-wrap">
+                  {(['관리팀원', '관리책임자', '대표'] as const).map(p => (
+                    <label key={p} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="position"
+                        value={p}
+                        checked={position === p}
+                        onChange={() => setPosition(p)}
+                        className="text-blue-600"
+                      />
+                      <span>{p}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-1">관리책임자/대표만 결재 승인이 가능합니다.</p>
               </div>
             </>
           )}

@@ -103,6 +103,12 @@ export default function Home() {
     checkExpiryAlert(profile.company_id)
   }, [profile?.company_id])
 
+  // 결재 대사 예외 알림
+  useEffect(() => {
+    if (!profile?.company_id) return
+    checkReconciliationAlert(profile.company_id)
+  }, [profile?.company_id])
+
   useEffect(() => {
     if (!profile?.company_id) return
     fetchData()
@@ -132,6 +138,21 @@ export default function Home() {
     const result = await res.json()
     if (result.sent) {
       await supabase.from('companies').update({ last_expiry_alert_at: new Date().toISOString() }).eq('id', companyId)
+    }
+  }
+
+  async function checkReconciliationAlert(companyId: string) {
+    const { data } = await supabase.from('companies').select('last_reconciliation_alert_at').eq('id', companyId).single()
+    const lastSent = data?.last_reconciliation_alert_at
+    if (lastSent && (new Date().getTime() - new Date(lastSent).getTime()) < 24 * 60 * 60 * 1000) return
+    const res = await fetch('/api/check-reconciliation-alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_id: companyId })
+    })
+    const result = await res.json()
+    if (result.sent) {
+      await supabase.from('companies').update({ last_reconciliation_alert_at: new Date().toISOString() }).eq('id', companyId)
     }
   }
 
