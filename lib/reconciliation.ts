@@ -2,8 +2,10 @@ import { SupabaseClient } from '@supabase/supabase-js'
 import { supabase as defaultClient } from '@/lib/supabase'
 
 // 승인 증빙(approval_documents) 대비 실물 트랜잭션(transactions) 대사 유틸.
-// "지시 증빙(Q) ↔ 실물 기록(Q)" 원칙: 유형별 기준 키로 승인수량을 실적에 문서 생성순으로
-// 소진시켜, 미달분(progress)과 증빙 없는 초과분(unmatched)을 분리해서 반환한다.
+// "지시 증빙(Q) ↔ 실물 기록(Q)" 원칙: 유형별 기준 키로, 문서가 승인된 시점 이후에 실제로
+// 발생한 실물기록만 그 문서 몫으로 인정해 소진시키고, 미달분(progress)과 증빙 없는
+// 초과분(unmatched)을 분리해서 반환한다. 승인 이전에 이미 있던 실물기록은 이 문서와
+// 무관하므로 절대 매칭되지 않고 그대로 unmatched(증빙 없음)로 남는다.
 // 기준 키: 입고=제품+창고, 출고=제품+채널, 이동=제품+출발창고+도착창고.
 
 // 예정일(expected_date) + 유예(grace_days)를 넘겼는지 판단하는 공용 헬퍼.
@@ -78,42 +80,54 @@ async function reconcile(
     .eq('company_id', companyId)
     .eq('doc_type', docType)
     .eq('status', '승인')
-    .order('created_at', { ascending: true })
+    .order('approved_at', { ascending: true })
 
   const { data: txs } = await client
     .from('transactions')
-    .select('product_id, warehouse_id, channel, quantity, note, products(product_name, product_code), warehouses(name)')
+    .select('id, product_id, warehouse_id, channel, quantity, note, created_at, products(product_name, product_code), warehouses(name)')
     .eq('company_id', companyId)
     .eq('type', txType)
 
+  interface TxEntry { remaining: number; created_at: string }
+
   const productNameById: Record<string, { product_name: string; product_code: string }> = {}
-  const actualByKey: Record<string, number> = {}
   const sampleByKey: Record<string, DisplaySample> = {}
+  const txsByKey: Record<string, TxEntry[]> = {}
 
   ;(txs || []).forEach((t: AnyRow) => {
     if (t.product_id && t.products) productNameById[t.product_id] = { product_name: t.products.product_name, product_code: t.products.product_code }
     const { key: locKey, display } = txSecondaryKey(t)
     const key = `${t.product_id}::${locKey}`
-    actualByKey[key] = (actualByKey[key] || 0) + t.quantity
     if (!sampleByKey[key]) sampleByKey[key] = { display_location: display }
+    if (!txsByKey[key]) txsByKey[key] = []
+    txsByKey[key].push({ remaining: t.quantity, created_at: t.created_at })
   })
+  // 문서별로 "먼저 들어온 실물기록"부터 소진하도록 시간순 정렬
+  Object.values(txsByKey).forEach(list => list.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()))
 
   const keysWithDoc = new Set<string>()
-  const consumedByKey: Record<string, number> = {}
   const progress: ReconciliationProgressRow[] = []
 
   ;(docs || []).forEach((doc: AnyRow) => {
     const { key: locKey, display } = docSecondaryKey(doc)
+    const approvedAt = doc.approved_at ? new Date(doc.approved_at).getTime() : 0
     ;(doc.approval_document_items || []).forEach((item: AnyRow) => {
       const key = `${item.product_id}::${locKey}`
       keysWithDoc.add(key)
       if (!sampleByKey[key]) sampleByKey[key] = { display_location: display }
 
-      const totalActual = actualByKey[key] || 0
-      const alreadyClaimed = consumedByKey[key] || 0
-      const availableActual = Math.max(0, totalActual - alreadyClaimed)
-      const claim = Math.min(availableActual, item.quantity)
-      consumedByKey[key] = alreadyClaimed + claim
+      // 이 문서가 승인된 시점 이후에 발생한 실물기록만 이 문서 몫으로 인정 (승인 이전 재고는 이 발주와 무관)
+      let need = item.quantity
+      let claimed = 0
+      for (const entry of txsByKey[key] || []) {
+        if (need <= 0) break
+        if (entry.remaining <= 0) continue
+        if (new Date(entry.created_at).getTime() < approvedAt) continue
+        const take = Math.min(entry.remaining, need)
+        entry.remaining -= take
+        need -= take
+        claimed += take
+      }
 
       progress.push({
         document_id: doc.id,
@@ -122,8 +136,8 @@ async function reconcile(
         product_code: item.products?.product_code || productNameById[item.product_id]?.product_code || '',
         display_location: display,
         approved_qty: item.quantity,
-        actual_qty: claim,
-        remaining_qty: item.quantity - claim,
+        actual_qty: claimed,
+        remaining_qty: item.quantity - claimed,
         approved_by: doc.approved_by,
         approved_at: doc.approved_at,
         expected_date: doc.expected_date ?? null,
@@ -135,9 +149,8 @@ async function reconcile(
   })
 
   const unmatched: UnmatchedRow[] = []
-  Object.entries(actualByKey).forEach(([key, total]) => {
-    const claimed = consumedByKey[key] || 0
-    const leftover = total - claimed
+  Object.entries(txsByKey).forEach(([key, list]) => {
+    const leftover = list.reduce((sum, e) => sum + e.remaining, 0)
     if (leftover <= 0) return
     const productId = key.split('::')[0]
     unmatched.push({

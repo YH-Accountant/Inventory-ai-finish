@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     const { data: doc, error: docError } = await supabase
       .from('approval_documents')
       .select(`
-        id, doc_type, status, supplier_name, order_number, expected_date, created_at, company_id,
+        id, doc_type, status, supplier_name, order_number, expected_date, created_at, company_id, requested_by,
         warehouses:warehouse_id ( name ),
         approval_document_items ( quantity, unit_price, products ( product_name, product_code ) )
       `)
@@ -61,8 +61,19 @@ export async function POST(request: Request) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const warehouseName = (doc as any).warehouses?.name || ''
 
+    const senderName = doc.requested_by ? `${companyName} ${doc.requested_by}` : companyName
+
     const html = `
       <div style="font-family:-apple-system,sans-serif;max-width:640px;margin:0 auto;color:#1a1a1a;">
+        <p style="font-size:14.5px;line-height:1.8;margin:0 0 20px;">
+          안녕하세요.<br/>
+          ${companyName}입니다.
+        </p>
+        <p style="font-size:14.5px;line-height:1.8;margin:0 0 28px;">
+          아래와 같이 발주서를 송부드리오니 확인 부탁드립니다.<br/>
+          확인 후 <b>발주확인서 회신</b> 부탁드리며, 문의사항 있으시면 언제든 연락 주세요.
+        </p>
+
         <div style="background:#1e3a8a;padding:24px 32px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center;">
           <h1 style="margin:0;color:white;font-size:20px;">발주서</h1>
           <span style="color:#bfdbfe;font-size:13px;">${doc.order_number || ''}</span>
@@ -103,11 +114,10 @@ export async function POST(request: Request) {
             </thead>
             <tbody>${itemRows}</tbody>
           </table>
-
-          <div style="margin-top:24px;padding:16px;background:#f8fafc;border-radius:8px;font-size:12px;color:#6b7280;text-align:center;">
-            ${companyName}에서 발송한 발주서입니다. 확인 후 발주확인서를 회신 부탁드립니다.
-          </div>
         </div>
+
+        <p style="font-size:14.5px;margin:28px 0 4px;">감사합니다.</p>
+        <p style="font-size:14.5px;color:#4b5563;margin:0;">${senderName} 드림</p>
       </div>`
 
     const { error: emailError } = await resend.emails.send({
