@@ -131,6 +131,16 @@ export default function ApprovalDetailPage() {
         approved_by: profile?.name || null,
         approved_at: now
       }).eq('id', doc.id)
+
+      if (doc.requested_by_user_id) {
+        await supabase.from('notifications').insert([{
+          company_id: profile?.company_id,
+          recipient_user_id: doc.requested_by_user_id,
+          document_id: doc.id,
+          type: '승인',
+          message: `${doc.doc_type} 승인되었습니다${doc.order_number ? ` (${doc.order_number})` : ''}`
+        }])
+      }
     }
     load()
   }
@@ -157,6 +167,16 @@ export default function ApprovalDetailPage() {
       approved_at: now,
       memo: doc.memo ? `${doc.memo}\n[반려사유] ${reason}` : `[반려사유] ${reason}`
     }).eq('id', doc.id)
+
+    if (doc.requested_by_user_id) {
+      await supabase.from('notifications').insert([{
+        company_id: profile?.company_id,
+        recipient_user_id: doc.requested_by_user_id,
+        document_id: doc.id,
+        type: '반려',
+        message: `${doc.doc_type} 반려되었습니다${doc.order_number ? ` (${doc.order_number})` : ''}: ${reason}`
+      }])
+    }
     load()
   }
 

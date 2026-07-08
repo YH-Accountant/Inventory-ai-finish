@@ -3,7 +3,8 @@
 import Link from 'next/link'
 import { useState, useRef, useEffect } from 'react'
 import { useAuth } from '@/app/contexts/AuthContext'
-import { usePathname } from 'next/navigation'
+import { useNotifications } from '@/app/contexts/NotificationContext'
+import { usePathname, useRouter } from 'next/navigation'
 
 const NAV_LINKS = [
   { href: '/transactions', label: '입출고' },
@@ -17,14 +18,21 @@ const NAV_LINKS = [
 
 export default function Navbar() {
   const { profile, signOut } = useAuth()
+  const { notifications, unreadCount, markAsRead } = useNotifications()
   const pathname = usePathname()
+  const router = useRouter()
   const [open, setOpen] = useState(false)
+  const [bellOpen, setBellOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const bellRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setOpen(false)
+      }
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
+        setBellOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClick)
@@ -63,8 +71,49 @@ export default function Navbar() {
           })}
         </div>
 
+        {/* 알림 벨 */}
+        <div className="relative shrink-0 ml-auto" ref={bellRef}>
+          <button
+            onClick={() => setBellOpen(!bellOpen)}
+            className="relative flex items-center justify-center hover:bg-blue-800 w-9 h-9 rounded-lg transition"
+          >
+            <span className="text-lg">🔔</span>
+            {unreadCount > 0 && (
+              <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 bg-red-500 rounded-full text-[10px] font-bold flex items-center justify-center">
+                {unreadCount > 9 ? '9+' : unreadCount}
+              </span>
+            )}
+          </button>
+
+          {bellOpen && (
+            <div className="absolute right-0 top-12 bg-white text-gray-700 rounded-xl shadow-xl w-80 max-w-[calc(100vw-2rem)] py-2 z-50 border border-gray-100 max-h-96 overflow-y-auto">
+              {notifications.length === 0 ? (
+                <p className="text-center text-sm text-gray-400 py-6">알림이 없습니다</p>
+              ) : (
+                notifications.map(n => (
+                  <button
+                    key={n.id}
+                    onClick={() => {
+                      markAsRead(n.id)
+                      setBellOpen(false)
+                      if (n.document_id) router.push(`/approvals/${n.document_id}`)
+                    }}
+                    className={`w-full text-left px-4 py-2.5 hover:bg-gray-50 text-sm flex items-start gap-2 ${!n.read_at ? 'bg-blue-50/50' : ''}`}
+                  >
+                    {!n.read_at && <span className="w-1.5 h-1.5 bg-blue-500 rounded-full mt-1.5 shrink-0" />}
+                    <div className={!n.read_at ? '' : 'pl-3.5'}>
+                      <p className="font-medium">{n.type}</p>
+                      <p className="text-gray-500 text-xs mt-0.5">{n.message}</p>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
         {/* 프로필 드롭다운 */}
-        <div className="relative shrink-0 ml-auto" ref={dropdownRef}>
+        <div className="relative shrink-0" ref={dropdownRef}>
           <button
             onClick={() => setOpen(!open)}
             className="flex items-center gap-2 hover:bg-blue-800 px-2 md:px-3 py-1.5 rounded-lg transition"
