@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/app/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -58,6 +58,33 @@ export default function OnboardingPage() {
     { product_name: '', quantity: 0, warehouse_name: '' }
   ])
   const [saving, setSaving] = useState(false)
+  const [checkingCompany, setCheckingCompany] = useState(true)
+
+  // 이미 세팅된(업종이 지정된) 회사에 새로 합류한 팀원이면 온보딩을 반복시키지 않고 바로 통과시킴 —
+  // 온보딩은 "회사" 단위 최초 설정이지 계정마다 반복할 절차가 아님.
+  useEffect(() => {
+    if (!profile?.company_id) return
+    let cancelled = false
+
+    async function checkCompany() {
+      const { data } = await supabase
+        .from('companies')
+        .select('industry')
+        .eq('id', profile!.company_id!)
+        .single()
+
+      if (cancelled) return
+      if (data?.industry) {
+        await completeOnboarding()
+        router.push('/')
+      } else {
+        setCheckingCompany(false)
+      }
+    }
+    checkCompany()
+
+    return () => { cancelled = true }
+  }, [profile?.company_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 업종 선택 완료 → companies 테이블 업데이트 후 choose 단계로
   async function handleIndustrySelect(industry: string) {
@@ -195,6 +222,14 @@ export default function OnboardingPage() {
 
   function removeRow(idx: number) {
     setRows(rows.filter((_, i) => i !== idx))
+  }
+
+  if (checkingCompany) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-xl">확인 중...</p>
+      </div>
+    )
   }
 
   return (
