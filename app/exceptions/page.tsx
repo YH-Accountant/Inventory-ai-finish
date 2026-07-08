@@ -32,6 +32,16 @@ interface LabeledEvidence extends EvidenceExceptionRow {
   source: EvidenceSourceLabel
 }
 
+interface CompletedEvidenceRow {
+  transaction_id: string
+  product_name: string
+  warehouse_name: string | null
+  quantity: number
+  evidence_file_url: string
+  created_at: string
+  source: EvidenceSourceLabel
+}
+
 const SHIPPING_TYPES = ['택배/화물', '자차배송', '직접픽업'] as const
 
 export default function ExceptionsPage() {
@@ -39,6 +49,7 @@ export default function ExceptionsPage() {
   const [missing, setMissing] = useState<LabeledMissing[]>([])
   const [unmatched, setUnmatched] = useState<LabeledUnmatched[]>([])
   const [evidenceExceptions, setEvidenceExceptions] = useState<LabeledEvidence[]>([])
+  const [completedEvidence, setCompletedEvidence] = useState<CompletedEvidenceRow[]>([])
   const [nonTransport, setNonTransport] = useState<NonTransportRow[]>([])
   const [pendingMissing, setPendingMissing] = useState<LabeledMissing[]>([])
   const [awaitingConfirmation, setAwaitingConfirmation] = useState<LabeledMissing[]>([])
@@ -59,13 +70,20 @@ export default function ExceptionsPage() {
 
   async function load(companyId: string) {
     setLoading(true)
-    const [{ data: companyData }, inbound, outbound, transfer, inboundEvidence, outboundEvidence] = await Promise.all([
+    const [{ data: companyData }, inbound, outbound, transfer, inboundEvidence, outboundEvidence, { data: completedTx }] = await Promise.all([
       supabase.from('companies').select('reconciliation_grace_days').eq('id', companyId).single(),
       getInboundReconciliation(companyId),
       getOutboundReconciliation(companyId),
       getTransferReconciliation(companyId),
       getInboundEvidenceExceptions(companyId),
-      getOutboundEvidenceExceptions(companyId)
+      getOutboundEvidenceExceptions(companyId),
+      supabase
+        .from('transactions')
+        .select('id, type, quantity, evidence_quantity, evidence_file_url, created_at, products(product_name), warehouses(name)')
+        .eq('company_id', companyId)
+        .in('type', ['입고', '출고'])
+        .not('evidence_file_url', 'is', null)
+        .order('created_at', { ascending: false })
     ])
     const grace = companyData?.reconciliation_grace_days ?? 3
     setGraceDays(grace)
@@ -90,6 +108,21 @@ export default function ExceptionsPage() {
       ...outboundEvidence.exceptions.map(e => ({ ...e, source: '출고' as EvidenceSourceLabel }))
     ])
     setNonTransport(outboundEvidence.nonTransport)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setCompletedEvidence(
+      (completedTx || [])
+        .filter((t: any) => t.evidence_quantity === t.quantity)
+        .map((t: any) => ({
+          transaction_id: t.id,
+          product_name: t.products?.product_name || '',
+          warehouse_name: t.warehouses?.name || null,
+          quantity: t.quantity,
+          evidence_file_url: t.evidence_file_url,
+          created_at: t.created_at,
+          source: t.type as EvidenceSourceLabel
+        }))
+    )
     setLoading(false)
   }
 
@@ -368,6 +401,44 @@ export default function ExceptionsPage() {
                 <p className="text-xs text-gray-400 mt-4">
                   비운송 처리 {nonTransport.length}건 (자차배송/직접픽업, 운송장 불필요)
                 </p>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow">
+            <div className="p-3 md:p-6 border-b">
+              <h2 className="text-base md:text-lg font-semibold text-green-600">
+                ✅ 증빙 완료 ({completedEvidence.length}건)
+              </h2>
+              <p className="text-xs text-gray-400 mt-1">
+                거래명세서·운송장이 첨부되고 수량까지 일치해 대사가 끝난 건입니다.
+              </p>
+            </div>
+            <div className="p-3 md:p-6">
+              {completedEvidence.length === 0 ? (
+                <p className="text-gray-500 text-center py-6">해당 사항 없습니다.</p>
+              ) : (
+                <div className="space-y-2">
+                  {completedEvidence.map((c) => (
+                    <div key={c.transaction_id} className="flex items-center justify-between border-b py-2">
+                      <div>
+                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 mr-2">{c.source}</span>
+                        <span className="font-medium text-sm">{c.product_name}</span>
+                        {c.warehouse_name && <span className="text-xs text-gray-500 ml-2">{c.warehouse_name}</span>}
+                        <span className="text-xs text-gray-400 ml-2">{new Date(c.created_at).toLocaleDateString('ko-KR')}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-green-700 font-semibold text-sm">{c.quantity.toLocaleString()}개</span>
+                        <button
+                          onClick={() => viewEvidence(c.transaction_id, c.evidence_file_url)}
+                          className="text-xs text-blue-600 hover:underline shrink-0"
+                        >
+                          보기
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
