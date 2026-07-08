@@ -22,6 +22,12 @@ interface Warehouse {
   name: string
 }
 
+interface Supplier {
+  id: string
+  name: string
+  contact_email: string | null
+}
+
 interface DocItem {
   id: string
   product_id: string
@@ -48,6 +54,7 @@ interface ApprovalDocument {
   expected_date: string | null
   confirmed_date: string | null
   supplier_name: string | null
+  supplier_id: string | null
   order_number: string | null
   requested_by: string | null
   requested_by_user_id: string | null
@@ -76,6 +83,7 @@ export default function ApprovalsPage() {
   const router = useRouter()
   const [products, setProducts] = useState<Product[]>([])
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [documents, setDocuments] = useState<ApprovalDocument[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -89,7 +97,7 @@ export default function ApprovalsPage() {
     channel: '',
     memo: '',
     expected_date: '',
-    supplier_name: ''
+    supplier_id: ''
   })
   const [items, setItems] = useState<ItemRow[]>([{ product_id: '', quantity: 0, isNew: false, newProductName: '', unit_price: '' }])
   const [saving, setSaving] = useState(false)
@@ -143,11 +151,17 @@ export default function ApprovalsPage() {
       .select('id, name')
       .eq('company_id', cid)
 
+    const { data: suppliersData } = await supabase
+      .from('suppliers')
+      .select('id, name, contact_email')
+      .eq('company_id', cid)
+      .order('name', { ascending: true })
+
     const { data: documentsData } = await supabase
       .from('approval_documents')
       .select(`
         id, doc_type, status, warehouse_id, to_warehouse_id, channel, memo, expected_date,
-        confirmed_date, supplier_name, order_number,
+        confirmed_date, supplier_name, supplier_id, order_number,
         requested_by, requested_by_user_id, approved_by, approved_at, created_at,
         warehouses:warehouse_id (name),
         to_warehouse:to_warehouse_id (name),
@@ -159,6 +173,7 @@ export default function ApprovalsPage() {
 
     setProducts(productsData || [])
     setWarehouses(warehousesData || [])
+    setSuppliers(suppliersData || [])
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     setDocuments((documentsData as any) || [])
     setLoading(false)
@@ -179,7 +194,7 @@ export default function ApprovalsPage() {
   }
 
   function resetForm() {
-    setFormData({ doc_type: '발주품의서', warehouse_id: '', to_warehouse_id: '', channel: '', memo: '', expected_date: '', supplier_name: '' })
+    setFormData({ doc_type: '발주품의서', warehouse_id: '', to_warehouse_id: '', channel: '', memo: '', expected_date: '', supplier_id: '' })
     setItems([{ product_id: '', quantity: 0, isNew: false, newProductName: '', unit_price: '' }])
     setShowForm(false)
   }
@@ -251,8 +266,9 @@ export default function ApprovalsPage() {
       alert(formData.doc_type === '발주품의서' ? '희망 납기일을 입력해주세요.' : '희망 출고예정일을 입력해주세요.')
       return
     }
-    if (formData.doc_type === '발주품의서' && !formData.supplier_name.trim()) {
-      alert('거래처명을 입력해주세요.')
+    const selectedSupplier = suppliers.find(s => s.id === formData.supplier_id)
+    if (formData.doc_type === '발주품의서' && !selectedSupplier) {
+      alert('거래처를 선택해주세요.')
       return
     }
 
@@ -272,7 +288,8 @@ export default function ApprovalsPage() {
           channel: formData.doc_type === '출고지시서' ? (formData.channel || null) : null,
           memo: formData.memo || null,
           expected_date: formData.doc_type !== '이동품의서' ? formData.expected_date : null,
-          supplier_name: formData.doc_type === '발주품의서' ? formData.supplier_name.trim() : null,
+          supplier_id: formData.doc_type === '발주품의서' ? selectedSupplier!.id : null,
+          supplier_name: formData.doc_type === '발주품의서' ? selectedSupplier!.name : null,
           order_number: orderNumber,
           requested_by: profile?.name || null,
           requested_by_user_id: profile?.id || null
@@ -399,15 +416,24 @@ export default function ApprovalsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {formData.doc_type === '발주품의서' && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">거래처명 *</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="예: OO코스메틱"
-                        value={formData.supplier_name}
-                        onChange={(e) => setFormData({ ...formData, supplier_name: e.target.value })}
-                        className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
+                      <label className="block text-sm font-medium text-gray-700 mb-1">거래처 *</label>
+                      {suppliers.length === 0 ? (
+                        <p className="text-sm text-gray-500">
+                          등록된 거래처가 없습니다. <Link href="/settings/suppliers" className="text-blue-600 hover:underline">거래처 관리에서 먼저 등록해주세요 →</Link>
+                        </p>
+                      ) : (
+                        <select
+                          required
+                          value={formData.supplier_id}
+                          onChange={(e) => setFormData({ ...formData, supplier_id: e.target.value })}
+                          className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">거래처 선택</option>
+                          {suppliers.map(s => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                   )}
 

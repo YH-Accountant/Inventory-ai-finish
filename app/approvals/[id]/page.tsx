@@ -37,6 +37,7 @@ interface DocumentDetail {
   confirmed_date: string | null
   confirmation_file_url: string | null
   supplier_name: string | null
+  supplier_id: string | null
   supplier_email: string | null
   order_number: string | null
   po_sent_at: string | null
@@ -81,7 +82,7 @@ export default function ApprovalDetailPage() {
       .from('approval_documents')
       .select(`
         id, doc_type, status, warehouse_id, to_warehouse_id, channel, memo,
-        expected_date, confirmed_date, confirmation_file_url, supplier_name, supplier_email,
+        expected_date, confirmed_date, confirmation_file_url, supplier_name, supplier_id, supplier_email,
         order_number, po_sent_at, po_sent_to,
         requested_by, requested_by_user_id, approved_by, approved_at, created_at,
         warehouses:warehouse_id (name),
@@ -227,9 +228,9 @@ export default function ApprovalDetailPage() {
   async function openSendForm() {
     if (doc?.supplier_email) {
       setSendEmail(doc.supplier_email)
-    } else if (profile?.company_id) {
-      const { data } = await supabase.from('companies').select('default_po_email').eq('id', profile.company_id).single()
-      setSendEmail(data?.default_po_email || '')
+    } else if (doc?.supplier_id) {
+      const { data } = await supabase.from('suppliers').select('contact_email').eq('id', doc.supplier_id).single()
+      setSendEmail(data?.contact_email || '')
     }
     setShowSendForm(true)
   }
@@ -239,6 +240,8 @@ export default function ApprovalDetailPage() {
       alert('수신 이메일을 입력해주세요.')
       return
     }
+    if (!confirm(`${sendEmail.trim()} 으로 발주서를 발송하시겠습니까?`)) return
+
     setSending(true)
     try {
       const res = await fetch('/api/send-purchase-order', {
