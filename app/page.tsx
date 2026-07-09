@@ -99,7 +99,7 @@ export default function Home() {
   const [selectedWarehouse, setSelectedWarehouse] = useState('전체')
   const [inventorySearch, setInventorySearch] = useState('')
   const [briefing, setBriefing] = useState<AiBriefing | null>(null)
-  const [actionAlerts, setActionAlerts] = useState({ overdueCount: 0, evidenceCount: 0 })
+  const [actionAlerts, setActionAlerts] = useState({ overdueCount: 0, evidenceCount: 0, unmatchedCount: 0 })
 
   // Command bar
   const [command, setCommand] = useState('')
@@ -188,7 +188,8 @@ export default function Home() {
     ].filter(p => p.remaining_qty > 0)
     const overdueCount = allMissing.filter(m => classifyMissing(m, graceBySource) === 'overdue').length
     const evidenceCount = inboundEvidence.length + outboundEvidence.exceptions.length
-    setActionAlerts({ overdueCount, evidenceCount })
+    const unmatchedCount = inbound.unmatched.length + outbound.unmatched.length + transfer.unmatched.length
+    setActionAlerts({ overdueCount, evidenceCount, unmatchedCount })
   }
 
   async function fetchData() {
@@ -361,6 +362,40 @@ export default function Home() {
       <Navbar />
       <div className="min-h-screen bg-slate-50 pt-24 md:pt-20">
         <div className="max-w-7xl mx-auto px-6 py-8">
+
+          {/* ── 조치 필요 배너: 페이지 맨 위, 역할별로 다른 항목 ──
+              창고: 본인이 실제로 처리해야 할 것(미기록/미달, 증빙)만.
+              관리책임자/대표: 회사 전체 현황(승인문서 없는 기록까지 포함한 오버사이트).
+              그 외(일반 관리팀원 등)에게는 액션 아이템이 아니라 표시하지 않음. */}
+          {(() => {
+            const isWarehouse = profile?.role === '창고'
+            const isManager = profile?.position === '관리책임자' || profile?.position === '대표'
+            if (!isWarehouse && !isManager) return null
+
+            const items: { label: string; count: number }[] = []
+            if (actionAlerts.overdueCount > 0) items.push({ label: '기한 초과 미기록/미달', count: actionAlerts.overdueCount })
+            if (actionAlerts.evidenceCount > 0) items.push({ label: '증빙 미첨부/불일치', count: actionAlerts.evidenceCount })
+            if (isManager && actionAlerts.unmatchedCount > 0) items.push({ label: '승인문서 없이 처리된 기록', count: actionAlerts.unmatchedCount })
+            if (items.length === 0) return null
+
+            return (
+              <Link
+                href="/exceptions"
+                className="block bg-red-600 hover:bg-red-700 transition text-white rounded-xl p-4 md:p-5 mb-4 shadow-md"
+              >
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-2xl">⚠️</span>
+                    <span className="font-bold text-base md:text-lg">조치 필요</span>
+                    {items.map(item => (
+                      <span key={item.label} className="text-sm md:text-base">{item.label} <b>{item.count}건</b></span>
+                    ))}
+                  </div>
+                  <span className="text-sm underline shrink-0">예외리스트에서 확인 →</span>
+                </div>
+              </Link>
+            )
+          })()}
 
           {/* ── KPI 카드 4개 ── */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
@@ -583,28 +618,6 @@ export default function Home() {
                 )}
               </div>
             </div>
-
-            {/* 조치 필요 배너 (최근 입출고 아래, 같은 열) */}
-            {(actionAlerts.overdueCount > 0 || actionAlerts.evidenceCount > 0) && (
-              <div className="lg:col-start-4 lg:col-span-2 bg-red-50 border border-red-200 rounded-xl p-3 md:p-5">
-                <h2 className="text-sm font-semibold text-red-700 mb-2">⚠️ 조치 필요</h2>
-                <div className="flex flex-col gap-1.5 text-sm">
-                  {actionAlerts.overdueCount > 0 && (
-                    <p className="text-red-700">
-                      기한 초과 미기록/미달 <span className="font-bold">{actionAlerts.overdueCount}건</span>
-                    </p>
-                  )}
-                  {actionAlerts.evidenceCount > 0 && (
-                    <p className="text-red-700">
-                      증빙 미첨부/불일치 <span className="font-bold">{actionAlerts.evidenceCount}건</span>
-                    </p>
-                  )}
-                </div>
-                <Link href="/exceptions" className="inline-block text-xs text-red-700 underline mt-2">
-                  예외리스트에서 확인하기 →
-                </Link>
-              </div>
-            )}
 
           </div>
         </div>

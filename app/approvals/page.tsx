@@ -109,6 +109,7 @@ export default function ApprovalsPage() {
   const [channelOrderFile, setChannelOrderFile] = useState<File | null>(null)
   const [parsingFile, setParsingFile] = useState(false)
   const [unmatchedNames, setUnmatchedNames] = useState<string[]>([])
+  const [shippingCutoffTime, setShippingCutoffTime] = useState('15:00')
 
   useEffect(() => {
     fetchData()
@@ -163,6 +164,13 @@ export default function ApprovalsPage() {
       .select('id, name, contact_email')
       .eq('company_id', cid)
       .order('name', { ascending: true })
+
+    const { data: companyData } = await supabase
+      .from('companies')
+      .select('shipping_cutoff_time')
+      .eq('id', cid)
+      .single()
+    setShippingCutoffTime((companyData?.shipping_cutoff_time || '15:00').slice(0, 5))
 
     const { data: documentsData } = await supabase
       .from('approval_documents')
@@ -304,6 +312,21 @@ export default function ApprovalsPage() {
     }
   }
 
+  // 출고지시서 전용: 확정일은 사람이 판단할 거리가 아니라 회사가 정한 마감시간 규칙의 결과값이라
+  // 기안 시점에 자동 계산한다 (마감 전=당일, 마감 후=익일).
+  function computeOutboundConfirmedDate(cutoffTime: string): string {
+    const now = new Date()
+    const [h, m] = cutoffTime.split(':').map(Number)
+    const cutoff = new Date(now)
+    cutoff.setHours(h, m, 0, 0)
+    const target = new Date(now)
+    if (now > cutoff) target.setDate(target.getDate() + 1)
+    const y = target.getFullYear()
+    const mo = String(target.getMonth() + 1).padStart(2, '0')
+    const d = String(target.getDate()).padStart(2, '0')
+    return `${y}-${mo}-${d}`
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
 
@@ -363,6 +386,7 @@ export default function ApprovalsPage() {
           channel_order_file_url: channelOrderFileUrl,
           memo: formData.memo || null,
           expected_date: formData.doc_type !== '이동품의서' ? formData.expected_date : null,
+          confirmed_date: formData.doc_type === '출고지시서' ? computeOutboundConfirmedDate(shippingCutoffTime) : null,
           supplier_id: formData.doc_type === '발주품의서' ? selectedSupplier!.id : null,
           supplier_name: formData.doc_type === '발주품의서' ? selectedSupplier!.name : null,
           order_number: orderNumber,

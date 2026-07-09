@@ -495,8 +495,9 @@ export default function ApprovalDetailPage() {
                 )}
               </div>
 
-              {/* 납기 확정 (승인권자만) */}
-              {isApprover && doc.doc_type !== '이동품의서' && (
+              {/* 납기 확정: 발주품의서 전용 — 거래처가 회신해준 날짜를 옮겨 적는 일이라 승인권자로 제한할 이유가 없음.
+                  출고지시서는 회사가 정한 마감규칙으로 기안 시점에 자동 계산되고, 이동품의서는 확정 개념이 없음. */}
+              {doc.doc_type === '발주품의서' && (
                 <div className="border-t pt-4">
                   {!showConfirmForm ? (
                     <button
