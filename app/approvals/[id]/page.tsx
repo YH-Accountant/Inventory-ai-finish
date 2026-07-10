@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/app/contexts/AuthContext'
 import Navbar from '@/app/components/Navbar'
 import { previewFifoDeduction, LotPreviewResult } from '@/lib/lotPreview'
+import { getDocumentCompletionByType, DocumentCompletion } from '@/lib/reconciliation'
 
 type DocType = '발주품의서' | '출고지시서' | '이동품의서'
 type Status = '대기' | '승인' | '반려'
@@ -71,6 +72,8 @@ export default function ApprovalDetailPage() {
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
   const [channelFileSignedUrl, setChannelFileSignedUrl] = useState<string | null>(null)
   const [lotPreviews, setLotPreviews] = useState<Record<string, LotPreviewResult>>({})
+  const [completion, setCompletion] = useState<DocumentCompletion | null>(null)
+  const [txEvidenceUrls, setTxEvidenceUrls] = useState<Record<string, string>>({})
 
   const [showConfirmForm, setShowConfirmForm] = useState(false)
   const [confirmedDate, setConfirmedDate] = useState('')
@@ -106,6 +109,11 @@ export default function ApprovalDetailPage() {
     const loadedDoc = (data as any) || null
     setDoc(loadedDoc)
     setLoading(false)
+
+    if (loadedDoc?.status === '승인' && profile?.company_id) {
+      const map = await getDocumentCompletionByType(profile.company_id, loadedDoc.doc_type, supabase)
+      setCompletion(map[loadedDoc.id] || null)
+    }
 
     if (loadedDoc?.doc_type === '출고지시서' && loadedDoc.warehouse_id) {
       const previews: Record<string, LotPreviewResult> = {}
@@ -146,6 +154,20 @@ export default function ApprovalDetailPage() {
       return
     }
     setChannelFileSignedUrl(data.signedUrl)
+    window.open(data.signedUrl, '_blank')
+  }
+
+  async function viewTransactionEvidence(path: string) {
+    if (txEvidenceUrls[path]) {
+      window.open(txEvidenceUrls[path], '_blank')
+      return
+    }
+    const { data, error } = await supabase.storage.from('evidence').createSignedUrl(path, 300)
+    if (error || !data) {
+      alert('파일 조회 실패: ' + error?.message)
+      return
+    }
+    setTxEvidenceUrls(prev => ({ ...prev, [path]: data.signedUrl }))
     window.open(data.signedUrl, '_blank')
   }
 
@@ -338,7 +360,12 @@ export default function ApprovalDetailPage() {
           <div className="bg-white rounded-lg shadow overflow-hidden">
             {/* 문서 헤더 */}
             <div className="bg-blue-900 text-white px-6 py-4 flex justify-between items-center">
-              <h1 className="text-lg font-bold">{doc.doc_type}</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-bold">{doc.doc_type}</h1>
+                {completion?.isComplete && (
+                  <span className="text-xs bg-white/15 text-white px-2 py-0.5 rounded-full font-medium">✓ 완료</span>
+                )}
+              </div>
               {doc.order_number && <span className="text-sm text-blue-200">발주번호 {doc.order_number}</span>}
             </div>
 
@@ -493,17 +520,50 @@ export default function ApprovalDetailPage() {
                   증빙 {showEvidence ? '숨기기' : '보기'}
                 </button>
                 {showEvidence && (
-                  <div className="mt-2 text-sm space-y-1">
-                    {doc.doc_type === '출고지시서' ? (
-                      doc.channel_order_file_url ? (
-                        <button onClick={viewChannelOrderFile} className="text-blue-600 hover:underline">채널 발주 근거서류 보기</button>
+                  <div className="mt-2 text-sm space-y-3">
+                    <div>
+                      {doc.doc_type === '출고지시서' ? (
+                        doc.channel_order_file_url ? (
+                          <button onClick={viewChannelOrderFile} className="text-blue-600 hover:underline">채널 발주 근거서류 보기</button>
+                        ) : (
+                          <p className="text-gray-400">첨부된 채널 발주 근거서류가 없습니다.</p>
+                        )
+                      ) : doc.confirmation_file_url ? (
+                        <button onClick={viewEvidence} className="text-blue-600 hover:underline">발주확인서 보기</button>
                       ) : (
-                        <p className="text-gray-400">첨부된 채널 발주 근거서류가 없습니다.</p>
-                      )
-                    ) : doc.confirmation_file_url ? (
-                      <button onClick={viewEvidence} className="text-blue-600 hover:underline">발주확인서 보기</button>
-                    ) : (
-                      <p className="text-gray-400">첨부된 발주확인서가 없습니다.</p>
+                        <p className="text-gray-400">첨부된 발주확인서가 없습니다.</p>
+                      )}
+                    </div>
+
+                    {doc.status === '승인' && doc.doc_type !== '이동품의서' && (
+                      <div>
+                        <p className="text-xs text-gray-500 mb-1">
+                          {doc.doc_type === '발주품의서' ? '거래명세서 (실물 입고 건별)' : '운송장 (실물 출고 건별)'}
+                        </p>
+                        {!completion || completion.matchedTransactions.length === 0 ? (
+                          <p className="text-gray-400">아직 매칭된 실물기록이 없습니다.</p>
+                        ) : (
+                          <ul className="space-y-1">
+                            {completion.matchedTransactions.map(t => {
+                              const isNonTransport = doc.doc_type === '출고지시서' && (t.shipping_type === '자차배송' || t.shipping_type === '직접픽업')
+                              return (
+                                <li key={t.id} className="flex items-center gap-2">
+                                  <span className="text-gray-500">{formatDate(t.created_at)} · {t.quantity.toLocaleString()}개</span>
+                                  {isNonTransport ? (
+                                    <span className="text-gray-400">({t.shipping_type}, 운송장 불필요)</span>
+                                  ) : t.evidence_file_url ? (
+                                    <button onClick={() => viewTransactionEvidence(t.evidence_file_url!)} className="text-blue-600 hover:underline">
+                                      보기{t.evidence_quantity !== t.quantity ? ` (수량 불일치: ${t.evidence_quantity ?? 0}개)` : ''}
+                                    </button>
+                                  ) : (
+                                    <span className="text-orange-500">증빙 미첨부</span>
+                                  )}
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}

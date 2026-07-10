@@ -4,5 +4,5 @@ compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-FORWARD_TO = "yehyun818585@gmail.com"
+FORWARD_TO = "tmddls1005@gmail.com"
 WEBHOOK_URL = "https://inventory-ai-finish.vercel.app/api/inbound-po-confirmation"

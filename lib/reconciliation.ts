@@ -266,6 +266,127 @@ export async function getInboundEvidenceExceptions(
   return exceptions
 }
 
+// ── 문서 단위 "완료" 판정 (결재 리스트의 완료 탭 + 문서 상세페이지 증빙 통합 표시용) ──
+// reconcile()과 같은 FIFO 소진 순서를 그대로 재현하되, 이번엔 집계 수량이 아니라
+// 소진에 실제로 쓰인 transaction 행(그 증빙 포함)까지 문서별로 추적한다.
+// reconcile() 자체는 건드리지 않는 별도의 읽기전용 로직 (lib/lotPreview.ts와 같은 방식).
+
+export interface MatchedEvidenceTransaction {
+  id: string
+  quantity: number
+  evidence_file_url: string | null
+  evidence_quantity: number | null
+  shipping_type: string | null
+  created_at: string
+}
+
+export interface DocumentCompletion {
+  isComplete: boolean
+  matchedTransactions: MatchedEvidenceTransaction[]
+}
+
+export async function getDocumentCompletionByType(
+  companyId: string,
+  docType: '발주품의서' | '출고지시서' | '이동품의서',
+  client: SupabaseClient = defaultClient
+): Promise<Record<string, DocumentCompletion>> {
+  const txType = docType === '발주품의서' ? '입고' : docType === '출고지시서' ? '출고' : '이동'
+  const needsEvidence = docType !== '이동품의서' // 이동은 증빙(거래명세서/운송장) 개념이 없음
+
+  const { data: docs } = await client
+    .from('approval_documents')
+    .select(`
+      id, warehouse_id, to_warehouse_id, channel, approved_at,
+      to_warehouse:to_warehouse_id ( name ),
+      approval_document_items ( product_id, quantity )
+    `)
+    .eq('company_id', companyId)
+    .eq('doc_type', docType)
+    .eq('status', '승인')
+    .order('approved_at', { ascending: true })
+
+  const { data: txs } = await client
+    .from('transactions')
+    .select('id, product_id, warehouse_id, channel, quantity, note, evidence_file_url, evidence_quantity, shipping_type, created_at')
+    .eq('company_id', companyId)
+    .eq('type', txType)
+
+  const docKey = (doc: AnyRow): string => {
+    if (docType === '발주품의서') return `${doc.warehouse_id}`
+    if (docType === '출고지시서') return `${doc.channel || ''}`
+    return `${doc.warehouse_id}::${doc.to_warehouse?.name || '(도착창고 미상)'}`
+  }
+  const txKey = (tx: AnyRow): string => {
+    if (docType === '발주품의서') return `${tx.warehouse_id}`
+    if (docType === '출고지시서') return `${tx.channel || ''}`
+    let toName = '(도착창고 미상)'
+    if (tx.note) {
+      const match = tx.note.match(/^(.+?) → (.+?)(?:\s*\(|$)/)
+      if (match) toName = match[2].trim()
+    }
+    return `${tx.warehouse_id}::${toName}`
+  }
+
+  interface TxEntry extends MatchedEvidenceTransaction { remaining: number }
+  const txsByKey: Record<string, TxEntry[]> = {}
+  const txById: Record<string, TxEntry> = {}
+  ;(txs || []).forEach((t: AnyRow) => {
+    const key = `${t.product_id}::${txKey(t)}`
+    const entry: TxEntry = {
+      id: t.id,
+      quantity: t.quantity,
+      remaining: t.quantity,
+      evidence_file_url: t.evidence_file_url ?? null,
+      evidence_quantity: t.evidence_quantity ?? null,
+      shipping_type: t.shipping_type ?? null,
+      created_at: t.created_at
+    }
+    if (!txsByKey[key]) txsByKey[key] = []
+    txsByKey[key].push(entry)
+    txById[t.id] = entry
+  })
+  Object.values(txsByKey).forEach(list => list.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()))
+
+  const result: Record<string, DocumentCompletion> = {}
+
+  ;(docs || []).forEach((doc: AnyRow) => {
+    const approvedAt = doc.approved_at ? new Date(doc.approved_at).getTime() : 0
+    const claimedIds = new Set<string>()
+    let fullyReceived = true
+
+    ;(doc.approval_document_items || []).forEach((item: AnyRow) => {
+      const key = `${item.product_id}::${docKey(doc)}`
+      let need = item.quantity
+      for (const entry of txsByKey[key] || []) {
+        if (need <= 0) break
+        if (entry.remaining <= 0) continue
+        if (new Date(entry.created_at).getTime() < approvedAt) continue
+        const take = Math.min(entry.remaining, need)
+        entry.remaining -= take
+        need -= take
+        claimedIds.add(entry.id)
+      }
+      if (need > 0) fullyReceived = false
+    })
+
+    const matchedTransactions: MatchedEvidenceTransaction[] = Array.from(claimedIds)
+      .map(id => txById[id])
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      .map(({ id, quantity, evidence_file_url, evidence_quantity, shipping_type, created_at }) => (
+        { id, quantity, evidence_file_url, evidence_quantity, shipping_type, created_at }
+      ))
+
+    const evidenceOk = !needsEvidence || matchedTransactions.every(t => {
+      if (docType === '출고지시서' && (t.shipping_type === '자차배송' || t.shipping_type === '직접픽업')) return true
+      return !!t.evidence_file_url && t.evidence_quantity === t.quantity
+    })
+
+    result[doc.id] = { isComplete: fullyReceived && evidenceOk, matchedTransactions }
+  })
+
+  return result
+}
+
 export async function getOutboundEvidenceExceptions(
   companyId: string,
   client: SupabaseClient = defaultClient

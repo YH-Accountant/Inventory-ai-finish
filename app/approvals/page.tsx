@@ -7,10 +7,11 @@ import * as XLSX from 'xlsx'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/app/contexts/AuthContext'
 import Navbar from '@/app/components/Navbar'
-import { getInboundReconciliation, getOutboundReconciliation, getTransferReconciliation, ReconciliationProgressRow } from '@/lib/reconciliation'
+import { getInboundReconciliation, getOutboundReconciliation, getTransferReconciliation, getDocumentCompletionByType, ReconciliationProgressRow, DocumentCompletion } from '@/lib/reconciliation'
 
 type DocType = '발주품의서' | '출고지시서' | '이동품의서'
 type Status = '대기' | '승인' | '반려'
+type TabFilter = Status | '완료'
 
 interface Product {
   id: string
@@ -82,7 +83,7 @@ interface ItemRow {
 }
 
 const DOC_TYPES: DocType[] = ['발주품의서', '출고지시서', '이동품의서']
-const STATUS_TABS: Status[] = ['대기', '승인', '반려']
+const STATUS_TABS: TabFilter[] = ['대기', '승인', '완료', '반려']
 
 export default function ApprovalsPage() {
   const { profile } = useAuth()
@@ -95,7 +96,8 @@ export default function ApprovalsPage() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [docTypeTab, setDocTypeTab] = useState<DocType>('발주품의서')
-  const [statusTab, setStatusTab] = useState<Status>('대기')
+  const [statusTab, setStatusTab] = useState<TabFilter>('대기')
+  const [completionMap, setCompletionMap] = useState<Record<string, DocumentCompletion>>({})
 
   const [formData, setFormData] = useState({
     doc_type: '발주품의서' as DocType,
@@ -148,6 +150,9 @@ export default function ApprovalsPage() {
     const map: Record<string, ReconciliationProgressRow> = {}
     progress.forEach(p => { map[`${p.document_id}::${p.product_id}`] = p })
     setProgressMap(map)
+
+    const completion = await getDocumentCompletionByType(profile.company_id, docType)
+    setCompletionMap(completion)
   }
 
   async function fetchData() {
@@ -507,7 +512,15 @@ export default function ApprovalsPage() {
   }
 
   const isApprover = profile?.position === '관리책임자' || profile?.position === '대표'
-  const filteredDocs = documents.filter(d => d.doc_type === docTypeTab && d.status === statusTab)
+
+  // "완료" = 승인된 문서 중 실물기록+증빙까지 다 끝난 것. status 컬럼 자체는 그대로 두고
+  // (대사 로직이 status='승인'으로 조회하므로) 리스트 화면에서만 승인 탭을 완료/진행중으로 나눠 보여준다.
+  function matchesTab(d: ApprovalDocument, tab: TabFilter): boolean {
+    if (tab === '완료') return d.status === '승인' && !!completionMap[d.id]?.isComplete
+    if (tab === '승인') return d.status === '승인' && !completionMap[d.id]?.isComplete
+    return d.status === tab
+  }
+  const filteredDocs = documents.filter(d => d.doc_type === docTypeTab && matchesTab(d, statusTab))
 
   if (loading) {
     return (
@@ -844,11 +857,11 @@ export default function ApprovalsPage() {
                     onClick={() => setStatusTab(s)}
                     className={`px-3 py-1 text-xs rounded-full font-medium transition ${
                       statusTab === s
-                        ? s === '대기' ? 'bg-orange-500 text-white' : s === '승인' ? 'bg-green-600 text-white' : 'bg-red-500 text-white'
+                        ? s === '대기' ? 'bg-orange-500 text-white' : s === '승인' ? 'bg-green-600 text-white' : s === '완료' ? 'bg-slate-700 text-white' : 'bg-red-500 text-white'
                         : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                     }`}
                   >
-                    {s} ({documents.filter(d => d.doc_type === docTypeTab && d.status === s).length})
+                    {s} ({documents.filter(d => d.doc_type === docTypeTab && matchesTab(d, s)).length})
                   </button>
                 ))}
               </div>
