@@ -121,7 +121,7 @@ export async function POST(request: Request) {
       </div>`
 
     const { error: emailError } = await resend.emails.send({
-      from: 'onboarding@resend.dev',
+      from: '아뛰드 구매팀 <po@attude.uk>',
       to: recipient_email,
       replyTo: 'po-confirm@attude.uk',
       subject: `[발주서] ${doc.supplier_name || ''} ${doc.order_number || ''}`,

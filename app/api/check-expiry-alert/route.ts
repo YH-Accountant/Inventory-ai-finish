@@ -146,7 +146,7 @@ export async function POST(request: Request) {
     // 6. 발송
     const recipients = warehouseUsers.map(u => u.email)
     const { error: emailError } = await resend.emails.send({
-      from: 'onboarding@resend.dev',
+      from: '재고관리 AI <notify@attude.uk>',
       to: recipients,
       subject,
       html

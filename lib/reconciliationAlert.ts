@@ -125,7 +125,7 @@ export async function runReconciliationAlertForCompany(
       }
       const html = buildEmailHtml(companyName, '의 입출고 처리가 필요한 건이 있습니다.', sections)
       const { error } = await resend.emails.send({
-        from: 'onboarding@resend.dev',
+        from: '재고관리 AI <notify@attude.uk>',
         to: warehouseUsers.map(u => u.email),
         subject: `[재고관리 AI] 입출고 처리 알림 - ${dueTodayList.length + stage1List.length}건`,
         html
@@ -153,7 +153,7 @@ export async function runReconciliationAlertForCompany(
         { label: '🚨 에스컬레이션: 미해소 지연 건', color: '#ef4444', rows, count: escalationList.length }
       ])
       const { error } = await resend.emails.send({
-        from: 'onboarding@resend.dev',
+        from: '재고관리 AI <notify@attude.uk>',
         to: approvers.map(a => a.email),
         subject: `[재고관리 AI] 입출고 지연 에스컬레이션 - ${escalationList.length}건`,
         html
@@ -178,7 +178,7 @@ export async function runReconciliationAlertForCompany(
         { label: '🚨 기록 있음 · 증빙 없음', color: '#ef4444', rows, count: unmatched.length }
       ])
       const { error } = await resend.emails.send({
-        from: 'onboarding@resend.dev',
+        from: '재고관리 AI <notify@attude.uk>',
         to: managers.map(m => m.email),
         subject: `[재고관리 AI] 결재 대사 예외 알림 - ${unmatched.length}건`,
         html

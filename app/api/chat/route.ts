@@ -350,7 +350,7 @@ async function executeTool(name: string, args: Record<string, string>, companyId
       m.email.replace(/(\+[^@]+)(@gmail\.com)$/, '$2')
     )
     const { error: emailError } = await resend.emails.send({
-      from: 'onboarding@resend.dev',
+      from: '재고관리 AI <notify@attude.uk>',
       to: recipients,
       subject: subject || '[재고관리 AI] 재고 현황 리포트',
       html
