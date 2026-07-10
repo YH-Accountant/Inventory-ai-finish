@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { PDFParse } from 'pdf-parse'
 
 function getSupabaseAdmin() {
   return createClient(
@@ -19,6 +18,7 @@ function extractConfirmedDate(text: string): string | null {
 // PDF(텍스트 기반)에서 본문 텍스트 추출. 스캔본 등 텍스트가 없으면 null.
 async function extractPdfText(buffer: Buffer): Promise<string | null> {
   try {
+    const { PDFParse } = await import('pdf-parse')
     const parser = new PDFParse({ data: buffer })
     const result = await parser.getText()
     await parser.destroy()
