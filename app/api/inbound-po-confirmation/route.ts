@@ -29,8 +29,15 @@ async function extractPdfText(buffer: Buffer): Promise<string | null> {
   }
 }
 
-// 이메일 제목으로 찾은 문서와, 실제 첨부파일 내용이 정말 그 문서 얘기가 맞는지 단계별로 확인.
-// 발주번호 → 품목명 → 수량 순서로 내려가며 확인하고, 명백히 다른 발주번호가 적혀있으면 바로 실패 처리.
+// 공백 차이(데일리쿠션 vs 데일리 쿠션)는 다른 문서라는 신호가 아니므로 비교 전에 제거.
+function normalizeForMatch(s: string): string {
+  return s.replace(/\s+/g, '')
+}
+
+// 이메일 제목으로 찾은 문서와, 실제 첨부파일 내용이 정말 그 문서 얘기가 맞는지 확인.
+// 발주번호가 명시돼 있으면 그것부터 확인(다르면 바로 실패). 없으면 품목명과 수량을
+// 각각 따로 보지 않고 "같은 품목의 이름과 수량이 함께" 나오는지로 본다 — 둘 중 하나만
+// 우연히 일치하는 건 그 문서라는 근거로 보기엔 약하기 때문.
 function verifyAttachmentContent(
   text: string,
   expectedOrderNumber: string,
@@ -42,13 +49,16 @@ function verifyAttachmentContent(
     return { verified: false, reason: `이메일 제목(${expectedOrderNumber})과 첨부파일 안 발주번호(${poMatch[0]})가 다릅니다.` }
   }
 
-  const nameMatch = items.some(i => i.product_name && text.includes(i.product_name))
-  if (nameMatch) return { verified: true, reason: null }
+  const normalizedText = normalizeForMatch(text)
+  const matched = items.some(i => {
+    if (!i.product_name) return false
+    const nameFound = normalizedText.includes(normalizeForMatch(i.product_name))
+    const qtyFound = normalizedText.includes(String(i.quantity))
+    return nameFound && qtyFound
+  })
+  if (matched) return { verified: true, reason: null }
 
-  const qtyMatch = items.some(i => text.includes(String(i.quantity)))
-  if (qtyMatch) return { verified: true, reason: null }
-
-  return { verified: false, reason: '첨부파일에서 발주 내역과 일치하는 정보(발주번호·품목명·수량)를 찾을 수 없습니다.' }
+  return { verified: false, reason: '첨부파일에서 발주 내역(품목명+수량)과 일치하는 정보를 찾을 수 없습니다.' }
 }
 
 interface InboundPayload {
