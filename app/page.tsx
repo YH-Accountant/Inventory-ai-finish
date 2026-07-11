@@ -58,8 +58,6 @@ interface AiBriefing {
   urgentProduct: string | null
   urgentDays: number | null
   expiryLoss: number
-  bestChannel: string | null
-  bestMargin: number
 }
 
 // ── 유틸 ────────────────────────────────────────────────
@@ -229,17 +227,14 @@ export default function Home() {
       { data: inventoryData },
       { data: txData },
       { count: todayTxCount },
-      { data: companyData },
-      { data: plansData }
+      { data: companyData }
     ] = await Promise.all([
       supabase.from('products').select('*').eq('company_id', cid).eq('is_active', true),
       supabase.from('warehouses').select('*').eq('company_id', cid),
       supabase.from('inventory').select('*, products(*), warehouses(*)').eq('company_id', cid),
       supabase.from('transactions').select('*, products(*), warehouses(*)').eq('company_id', cid).order('created_at', { ascending: false }).limit(10),
       supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('company_id', cid).gte('created_at', new Date(new Date().setHours(0, 0, 0, 0)).toISOString()),
-      supabase.from('companies').select('default_shelf_life_months, shelf_life_warning_ratio').eq('id', cid).single(),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      supabase.from('product_plans').select('name, channel, selling_price, commission_rate, event_discount_rate, assembly_cost, plan_items(quantity, products(unit_cost))').eq('company_id', cid) as any
+      supabase.from('companies').select('default_shelf_life_months, shelf_life_warning_ratio').eq('id', cid).single()
     ])
 
     const inv = (inventoryData || []) as InventoryItem[]
@@ -306,27 +301,10 @@ export default function Home() {
       }
     })
 
-    // 최고 마진 채널
-    let bestChannel: string | null = null
-    let bestMargin = -Infinity
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(plansData || []).forEach((plan: any) => {
-      if (!plan.selling_price) return
-      const net = plan.selling_price * (1 - (plan.commission_rate || 0) - (plan.event_discount_rate || 0))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const bom = (plan.plan_items || []).reduce((s: number, i: any) => s + (i.quantity || 0) * (i.products?.unit_cost || 0), 0)
-      const cost = bom + (plan.assembly_cost || 0)
-      if (cost === 0) return
-      const margin = (net - cost) / plan.selling_price
-      if (margin > bestMargin) { bestMargin = margin; bestChannel = plan.channel || plan.name }
-    })
-
     setBriefing({
       urgentProduct,
       urgentDays,
-      expiryLoss,
-      bestChannel,
-      bestMargin: bestMargin === -Infinity ? 0 : bestMargin
+      expiryLoss
     })
 
     setLoading(false)
@@ -509,21 +487,6 @@ export default function Home() {
                   <div className="flex items-center gap-2 text-sm">
                     <span className="text-emerald-500 font-bold">✅</span>
                     <span className="text-gray-600">폐기 위험 재고 없음</span>
-                  </div>
-                )}
-                {briefing.bestChannel && briefing.bestMargin > 0 ? (
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="text-blue-500 font-bold">💡</span>
-                    <span className="text-gray-700">
-                      최고 마진 채널 <span className="font-bold text-blue-700">{briefing.bestChannel}</span>
-                      {' '}<span className="text-blue-600">{(briefing.bestMargin * 100).toFixed(1)}%</span>
-                      {' '}&mdash; 기획세트 기준
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="text-gray-400">💡</span>
-                    <span className="text-gray-400">기획세트 원가 데이터 입력 후 마진 분석 가능</span>
                   </div>
                 )}
               </div>

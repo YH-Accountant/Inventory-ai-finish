@@ -596,35 +596,23 @@ export default function UploadPage() {
     try {
       const cid = profile?.company_id || ''
       if (deleteOption === 'all') {
-        // 전체 삭제: plan_items → product_plans → transactions → 재고 → 제품 → 창고 순서
-        console.log('   1/6 기획 구성품 삭제 중...')
-        const { data: planIds } = await supabase.from('product_plans').select('id').eq('company_id', cid)
-        if (planIds && planIds.length > 0) {
-          await supabase.from('plan_items').delete().in('plan_id', planIds.map(p => p.id))
-        }
-        console.log('   ✅ 기획 구성품 삭제 완료')
-
-        console.log('   2/6 기획 삭제 중...')
-        const { error: ep } = await supabase.from('product_plans').delete().eq('company_id', cid)
-        if (ep) console.error('   ❌ 기획 삭제 실패:', ep.message)
-        else console.log('   ✅ 기획 삭제 완료')
-
-        console.log('   3/6 트랜잭션 삭제 중...')
+        // 전체 삭제: transactions → 재고 → 제품 → 창고 순서
+        console.log('   1/4 트랜잭션 삭제 중...')
         const { error: e1 } = await supabase.from('transactions').delete().eq('company_id', cid)
         if (e1) console.error('   ❌ 트랜잭션 삭제 실패:', e1.message)
         else console.log('   ✅ 트랜잭션 삭제 완료')
 
-        console.log('   4/6 재고 삭제 중...')
+        console.log('   2/4 재고 삭제 중...')
         const { error: e2 } = await supabase.from('inventory').delete().eq('company_id', cid)
         if (e2) console.error('   ❌ 재고 삭제 실패:', e2.message)
         else console.log('   ✅ 재고 삭제 완료')
 
-        console.log('   5/6 제품 삭제 중...')
+        console.log('   3/4 제품 삭제 중...')
         const { error: e3 } = await supabase.from('products').delete().eq('company_id', cid)
         if (e3) console.error('   ❌ 제품 삭제 실패:', e3.message)
         else console.log('   ✅ 제품 삭제 완료')
 
-        console.log('   6/6 창고 삭제 중...')
+        console.log('   4/4 창고 삭제 중...')
         const { error: e4 } = await supabase.from('warehouses').delete().eq('company_id', cid)
         if (e4) console.error('   ❌ 창고 삭제 실패:', e4.message)
         else console.log('   ✅ 창고 삭제 완료')

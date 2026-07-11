@@ -39,11 +39,9 @@ interface ReportStats {
 }
 
 interface KpiData {
-  expiryLossAmount: number      // 폐기 예상 손실액
+  expiryLossAmount: number      // 폐기 위험 재고 금액
   urgentOrderDays: number       // 발주 긴급 제품 최소 소진일
   urgentOrderCount: number      // 발주 긴급 제품 수
-  bestChannelName: string       // 최고 마진 채널명
-  bestChannelMargin: number     // 최고 마진율
 }
 
 const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316']
@@ -206,34 +204,7 @@ export default function ReportPage() {
       const urgentOrderCount = urgentProducts.length
       const urgentOrderDays = urgentProducts.length > 0 ? urgentProducts[0].daysLeft : 999
 
-      // ── KPI 3: 최고 마진 채널 (기획세트 기준) ────────────────────────
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data: plansData } = await supabase
-        .from('product_plans')
-        .select('name, channel, selling_price, commission_rate, event_discount_rate, assembly_cost, plan_items(quantity, products(unit_cost))')
-        .eq('company_id', profile.company_id)
-      let bestChannelName = '-'
-      let bestChannelMargin = -Infinity
-      if (plansData && plansData.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        plansData.forEach((plan: any) => {
-          if (!plan.selling_price || plan.selling_price === 0) return
-          const netRevenue = plan.selling_price * (1 - (plan.commission_rate || 0) - (plan.event_discount_rate || 0))
-          const bomCost = (plan.plan_items || []).reduce((sum: number, item: any) => {
-            return sum + (item.quantity || 0) * (item.products?.unit_cost || 0)
-          }, 0)
-          const totalCost = bomCost + (plan.assembly_cost || 0)
-          if (totalCost === 0) return
-          const margin = (netRevenue - totalCost) / plan.selling_price
-          if (margin > bestChannelMargin) {
-            bestChannelMargin = margin
-            bestChannelName = plan.channel || plan.name
-          }
-        })
-      }
-      if (bestChannelMargin === -Infinity) bestChannelMargin = 0
-
-      setKpi({ expiryLossAmount, urgentOrderDays, urgentOrderCount, bestChannelName, bestChannelMargin })
+      setKpi({ expiryLossAmount, urgentOrderDays, urgentOrderCount })
 
       // 창고별 재고 차트
       const stockByWarehouse: Record<string, number> = {}
@@ -406,8 +377,8 @@ export default function ReportPage() {
 
         {/* KPI 카드 (리포트 생성 후) */}
         {kpi && (
-          <div className="grid grid-cols-3 gap-2 mb-3">
-            {/* 폐기 예상 손실액 */}
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            {/* 폐기 위험 재고 금액 */}
             <div className="bg-white rounded-lg shadow p-2.5 border-l-4 border-red-400">
               <p className="text-xs font-semibold text-red-500 mb-0.5 leading-tight">폐기 위험</p>
               <p className="text-sm font-bold text-gray-900 leading-tight">
@@ -428,17 +399,6 @@ export default function ReportPage() {
               </p>
               <p className="text-xs text-gray-400 mt-0.5 leading-tight">
                 {kpi.urgentOrderCount > 0 ? `D-${kpi.urgentOrderDays}일` : '30일↑ 안전'}
-              </p>
-            </div>
-
-            {/* 최고 마진 채널 */}
-            <div className="bg-white rounded-lg shadow p-2.5 border-l-4 border-blue-400">
-              <p className="text-xs font-semibold text-blue-500 mb-0.5 leading-tight">마진채널</p>
-              <p className="text-sm font-bold text-gray-900 leading-tight truncate">
-                {kpi.bestChannelName !== '-' ? kpi.bestChannelName : '기획없음'}
-              </p>
-              <p className="text-xs text-gray-400 mt-0.5 leading-tight">
-                {kpi.bestChannelMargin > 0 ? `${(kpi.bestChannelMargin * 100).toFixed(1)}%` : '데이터부족'}
               </p>
             </div>
           </div>

@@ -125,19 +125,7 @@ export default function ChatWidget() {
     warehouseChoices?: Warehouse[]
     confirmedProduct?: Product
   }
-  interface PendingPlanAction {
-    planName: string
-    setQty: number
-    channel: string | null
-    transactionDate: string
-    bomLotsMap: {
-      bom: { product_id: string; product_name: string; qty_per_set: number; unit_cost: number }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      normalLots: any[]
-    }[]
-  }
   const [pendingPartial, setPendingPartial] = useState<PendingPartial | null>(null)
-  const [pendingPlanAction, setPendingPlanAction] = useState<PendingPlanAction | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
@@ -153,7 +141,7 @@ export default function ChatWidget() {
     }
   }, [isOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 실시간 DB 변경 구독 (제품/재고/기획세트 변경 시 자동 갱신)
+  // 실시간 DB 변경 구독 (제품/재고 변경 시 자동 갱신)
   useEffect(() => {
     if (!profile?.company_id) return
 
@@ -161,7 +149,6 @@ export default function ChatWidget() {
       .channel(`chat-realtime-${profile.company_id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => fetchData())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => fetchData())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'product_plans' }, () => fetchData())
       .subscribe()
 
     return () => {
@@ -488,8 +475,6 @@ export default function ChatWidget() {
 
       if (data.action === '입고' || data.action === '출고' || data.action === '창고이동') {
         await resolveAction(data)
-      } else if (data.action === '기획출고') {
-        await executePlanOutbound(data)
       } else if (data.action === '질문' || data.action === '답변') {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }])
       } else if (data.action === '조회') {
@@ -510,151 +495,6 @@ export default function ChatWidget() {
       setLoading(false)
       setTimeout(() => inputRef.current?.focus(), 100)
     }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function executePlanOutbound(data: any) {
-    const { plan_id, plan_name, quantity: setQty } = data
-
-    const { name: resolvedChannel, unmatched } = resolveRegisteredChannel(data.channel, channels)
-    if (unmatched) {
-      const channelNames = channels.map(c => c.name).join(', ')
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `"${data.channel}" 채널을 찾을 수 없습니다. 등록된 채널 중 어디인가요? (${channelNames})`
-      }])
-      return
-    }
-    const channel = resolvedChannel
-
-    // 1. BOM 조회
-    const { data: planData, error } = await supabase
-      .from('product_plans')
-      .select(`plan_items(quantity, products(id, product_name, unit_cost))`)
-      .eq('id', plan_id)
-      .single()
-
-    if (error || !planData) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `"${plan_name}" 기획을 찾을 수 없습니다.` }])
-      return
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bomItems: { product_id: string; product_name: string; qty_per_set: number; unit_cost: number }[] = (planData.plan_items || []).map((item: any) => ({
-      product_id: item.products?.id,
-      product_name: item.products?.product_name,
-      qty_per_set: item.quantity,
-      unit_cost: item.products?.unit_cost || 0
-    }))
-
-    const transactionDate = new Date().toISOString()
-    const deductionLog: string[] = []
-    const errors: string[] = []
-
-    // 2. 전체 구성품 재고 사전 확인 (하나라도 부족하면 전체 취소)
-    const today = new Date()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bomLotsMap: { bom: typeof bomItems[0]; normalLots: any[] }[] = []
-
-    for (const bom of bomItems) {
-      const totalQty = bom.qty_per_set * setQty
-
-      const { data: lots } = await supabase
-        .from('inventory')
-        .select('id, quantity, lot_number, lot_unit_cost, warehouse_id, warehouses(name)')
-        .eq('product_id', bom.product_id)
-        .eq('company_id', profile?.company_id)
-        .gt('quantity', 0)
-        .order('lot_number', { ascending: true })
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const normalLots = (lots || []).filter((lot: any) => {
-        if (!lot.lot_number || !/^\d{6}/.test(lot.lot_number)) return true
-        const y = parseInt('20' + lot.lot_number.substring(0, 2))
-        const m = parseInt(lot.lot_number.substring(2, 4)) - 1
-        const d = parseInt(lot.lot_number.substring(4, 6))
-        const expiry = new Date(y, m, d)
-        expiry.setMonth(expiry.getMonth() + companyShelfLife)
-        const days = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-        return days > companyShelfLife * 30 * companyWarningRatio
-      })
-
-      const available = normalLots.reduce((sum: number, l: any) => sum + l.quantity, 0)
-      if (available < totalQty) {
-        errors.push(`${bom.product_name}: 재고 부족 (필요 ${totalQty}개, 가용 ${available}개)`)
-      }
-      bomLotsMap.push({ bom, normalLots })
-    }
-
-    // 하나라도 부족하면 전체 취소
-    if (errors.length > 0) {
-      const msg = `⚠️ 기획 출고 취소\n📦 ${plan_name} × ${setQty}세트\n\n모든 구성품이 충족되어야 출고 가능합니다.\n\n재고 부족:\n` + errors.map(e => `- ${e}`).join('\n')
-      setMessages(prev => {
-        const next: Message[] = [...prev, { role: 'assistant', content: msg }]
-        try { sessionStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(next)) } catch { /* */ }
-        return next
-      })
-      return
-    }
-
-    // 3. 재고 확인 통과 → 확인 단계 진입
-    const summary = `📦 ${plan_name} × ${setQty}세트 기획 출고를 진행합니다.\n\n구성품:\n` +
-      bomLotsMap.map(({ bom }) => `- ${bom.product_name} ${(bom.qty_per_set * setQty).toLocaleString()}개`).join('\n')
-
-    setPendingPlanAction({ planName: plan_name, setQty, channel: channel || null, transactionDate, bomLotsMap })
-    setMessages(prev => [...prev, { role: 'assistant', content: summary }])
-  }
-
-  async function executePlanOutboundConfirmed(pending: PendingPlanAction) {
-    const { planName, setQty, channel, transactionDate, bomLotsMap } = pending
-    const deductionLog: string[] = []
-
-    for (const { bom, normalLots } of bomLotsMap) {
-      const totalQty = bom.qty_per_set * setQty
-      let remaining = totalQty
-      let actualCostTotal = 0
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      for (const lot of normalLots as any[]) {
-        if (remaining <= 0) break
-        const deduct = Math.min(lot.quantity, remaining)
-        const newQty = lot.quantity - deduct
-        const lotCost = lot.lot_unit_cost ?? bom.unit_cost ?? 0
-        actualCostTotal += deduct * lotCost
-        if (newQty <= 0) {
-          await supabase.from('inventory').delete().eq('id', lot.id)
-        } else {
-          await supabase.from('inventory').update({ quantity: newQty, updated_at: new Date().toISOString() }).eq('id', lot.id)
-        }
-        remaining -= deduct
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const firstLot = normalLots[0] as any
-      await supabase.from('transactions').insert([{
-        product_id: bom.product_id,
-        warehouse_id: firstLot?.warehouse_id,
-        type: '출고',
-        quantity: totalQty,
-        channel: channel || null,
-        note: `[기획출고] ${planName} ${setQty}세트`,
-        recorded_by: profile?.name || 'AI',
-        created_at: transactionDate,
-        company_id: profile?.company_id
-      }])
-
-      const avgCost = totalQty > 0 ? Math.round(actualCostTotal / totalQty) : 0
-      deductionLog.push(`${bom.product_name} ${totalQty}개 (${bom.qty_per_set}×${setQty}, 원가 ${avgCost.toLocaleString()}원/개)`)
-    }
-
-    const msg = `기획 출고 완료!\n📦 ${planName} × ${setQty}세트\n\n차감 내역:\n` + deductionLog.map(d => `- ${d}`).join('\n')
-    setMessages(prev => {
-      const next: Message[] = [...prev, { role: 'assistant', content: msg }]
-      try { sessionStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(next)) } catch { /* */ }
-      return next
-    })
-    setPendingPlanAction(null)
-    window.location.reload()
   }
 
   async function getInventory(productName: string) {
@@ -1034,11 +874,7 @@ export default function ChatWidget() {
   }
 
   async function handleConfirm() {
-    if (pendingPlanAction) {
-      setLoading(true)
-      await executePlanOutboundConfirmed(pendingPlanAction)
-      setLoading(false)
-    } else if (pendingAction) {
+    if (pendingAction) {
       await confirmActionWith(pendingAction)
     }
   }
@@ -1046,7 +882,6 @@ export default function ChatWidget() {
   function cancelAction() {
     setPendingAction(null)
     setPendingPartial(null)
-    setPendingPlanAction(null)
     setMessages(prev => [...prev, { role: 'assistant', content: '취소되었습니다.' }])
     setTimeout(() => inputRef.current?.focus(), 100)
   }
@@ -1103,7 +938,7 @@ export default function ChatWidget() {
             )}
 
             {/* 재고 변경 확인 버튼 */}
-            {(pendingAction || pendingPlanAction) && !loading && (
+            {pendingAction && !loading && (
               <div className="flex gap-2 pt-1">
                 <button
                   onClick={handleConfirm}
@@ -1125,7 +960,7 @@ export default function ChatWidget() {
 
           {/* 입력 영역 */}
           <form ref={formRef} onSubmit={handleSubmit} className="p-3 border-t flex flex-col gap-1.5 shrink-0">
-            {(pendingAction || pendingPlanAction) && (
+            {pendingAction && (
               <p className="text-xs text-center text-orange-500">위에서 확인 또는 취소를 눌러주세요</p>
             )}
             <div className="flex gap-2">
@@ -1136,11 +971,11 @@ export default function ChatWidget() {
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="입고/출고/이동 요청 입력..."
                 className="flex-1 border rounded-lg px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
-                disabled={loading || !!(pendingAction || pendingPlanAction)}
+                disabled={loading || !!pendingAction}
               />
               <button
                 type="submit"
-                disabled={loading || !input.trim() || !!(pendingAction || pendingPlanAction)}
+                disabled={loading || !input.trim() || !!pendingAction}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
                 전송

@@ -79,20 +79,6 @@ const tools: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'get_plans',
-      description: '등록된 기획세트 목록 조회. 기획명, 채널, BOM 구성품 포함. 기획출고 요청 시 search 없이 전체 목록을 먼저 가져와서 유사한 기획명을 직접 찾을 것.',
-      parameters: {
-        type: 'object',
-        properties: {
-          search: { type: 'string', description: '기획명 검색어 (선택)' }
-        },
-        required: []
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'send_email_to_manager',
       description: '본사/관리자(role=본사)에게 이메일 발송. 사용자가 요청한 내용(일부 발췌, 요약, 추가 코멘트 등)을 AI가 편집해서 보냄.',
       parameters: {
@@ -276,36 +262,6 @@ async function executeTool(name: string, args: Record<string, string>, companyId
     return JSON.stringify(recommendations.length > 0 ? recommendations : '발주 필요 제품 없음 (모든 제품 30일 이상 재고 여유)')
   }
 
-  if (name === 'get_plans') {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let query: any = supabase
-      .from('product_plans')
-      .select(`id, name, channel, commission_rate, event_discount_rate, selling_price, assembly_cost, total_cost,
-        plan_items(quantity, unit_cost, products(id, product_name, product_code))`)
-      .or(`company_id.eq.${companyId},company_id.is.null`)
-      .neq('is_active', false)
-    if (args.search) query = query.ilike('name', `%${args.search}%`)
-    const { data } = await query
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = (data || []).map((plan: any) => ({
-      id: plan.id,
-      name: plan.name,
-      channel: plan.channel,
-      commission_rate: plan.commission_rate,
-      total_cost: plan.total_cost,
-      selling_price: plan.selling_price,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      bom: (plan.plan_items || []).map((item: any) => ({
-        product_id: item.products?.id,
-        product_name: item.products?.product_name,
-        product_code: item.products?.product_code,
-        quantity_per_set: item.quantity,
-        unit_cost: item.unit_cost
-      }))
-    }))
-    return JSON.stringify(result)
-  }
-
   if (name === 'send_email_to_manager') {
     const { subject, content } = args
 
@@ -441,16 +397,6 @@ export async function POST(request: Request) {
   "message": "사용자에게 보여줄 메시지"
 }
 
-### 기획세트 출고 시
-{
-  "action": "기획출고",
-  "plan_id": "기획 ID (get_plans 결과에서 가져올 것)",
-  "plan_name": "기획명",
-  "quantity": 숫자 (세트 수량),
-  "channel": "채널명",
-  "message": "사용자에게 보여줄 메시지"
-}
-
 ### 조회/분석 답변 시
 {"action": "답변", "message": "한국어 자연어 답변"}
 
@@ -486,22 +432,6 @@ export async function POST(request: Request) {
 - 사용자가 "~창고로 이동", "~로 보내" 등 이동 표현 사용 → action:"창고이동", to_warehouse 설정
 - 채널도 to_warehouse도 없으면 → action:"질문"으로 "외부 채널 출고인가요(${channelNames}), 창고 간 이동인가요?" 안내
 - 등록된 채널 목록에 없는 임의 채널값 절대 금지
-
-## 기획세트 출고 규칙
-- "기획세트 출고", "기획 출고", 기획명으로 출고 요청 시 → 반드시 get_plans tool 먼저 호출 (search 없이 전체 목록 조회)
-- get_plans 결과에서 사용자가 말한 키워드와 부분 일치 또는 유사한 기획명을 찾을 것
-  예) 사용자: "틴트기획" → 목록에서 "틴팅틴트세트" 처럼 포함되거나 비슷한 이름 찾기
-  예) 사용자: "틴트세트" → "틴팅틴트세트" 매칭 가능
-- 유사한 기획 1개 찾으면 → action:"기획출고", plan_id, plan_name, quantity, channel 반환
-- 유사한 기획이 여러 개면 → action:"질문"으로 후보 목록 나열하고 선택 요청
-- 아무것도 못 찾은 경우에도 → action:"질문"으로 전체 기획 목록 나열하고 어떤 기획인지 물어볼 것
-- 절대 "해당 기획을 찾을 수 없습니다"로 끝내지 말 것 — 항상 목록을 보여주고 선택 유도
-- ★ get_plans 결과를 받은 후에는 get_inventory 절대 호출 금지 — 기획 이름 못 찾으면 즉시 action:"질문"으로 전체 목록 안내
-- 사용자가 번호(1, 2, 3...) 또는 기획명으로 선택 응답을 했을 때:
-  1. get_plans tool 다시 호출해서 전체 목록 가져오기
-  2. 이전 대화에서 나열한 순서 기준으로 n번째 기획 선택
-  3. 해당 plan_id, plan_name, channel 확인 후 즉시 action:"기획출고" JSON 반환
-  4. 설명 텍스트 절대 금지, JSON만 반환
 
 ## 제품/창고 선택 규칙 (매우 중요)
 - 입출고/이동 action을 반환할 때 절대로 제품 선택 질문하지 말 것

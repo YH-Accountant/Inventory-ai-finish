@@ -77,8 +77,7 @@ export default function TransactionsPage() {
     note: '',
     lot_number: '',          // 로트번호 (입고 시 필수, 형식: YYMMDD-NN)
     transaction_date: '',    // 거래 날짜 (기본값: 오늘)
-    stock_type: '일반',      // 재고 구분: 일반 / 기획용
-    lot_unit_cost: '',       // 이번 입고 원가 (기획용일 때 직접 입력, 빈값이면 제품 기본원가)
+    stock_type: '일반',      // 재고 구분: 일반 / 반품격리(반품 입고 시)
     return_of_transaction_id: '', // 반품 입고 시: 원 출고 건 참조 (근거 없는 반품 차단)
     quarantine: false,       // 반품 입고 시: 재판매 불가(격리) 처리 여부 — 실물 확인 후 담당자가 최종 판단
     internal_use_reason: '', // 내부사용 세부사유: 샘플/협찬/테스트/기타
@@ -456,7 +455,7 @@ export default function TransactionsPage() {
           returnPhotoUrl = path
         }
 
-        // 입고: 제품+창고+로트번호+재고구분으로 로트 찾기 (재고구분까지 함께 봐야 일반/기획용/반품격리가 서로 안 섞임)
+        // 입고: 제품+창고+로트번호+재고구분으로 로트 찾기 (재고구분까지 함께 봐야 일반/반품격리가 서로 안 섞임)
         const { data: existingInventory } = await supabase
           .from('inventory')
           .select('*')
@@ -472,7 +471,6 @@ export default function TransactionsPage() {
             .update({
               quantity: existingInventory.quantity + formData.quantity,
               stock_type: effectiveStockType,
-              lot_unit_cost: formData.lot_unit_cost !== '' ? Number(formData.lot_unit_cost) : existingInventory.lot_unit_cost,
               updated_at: new Date().toISOString()
             })
             .eq('id', existingInventory.id)
@@ -485,7 +483,6 @@ export default function TransactionsPage() {
               quantity: formData.quantity,
               lot_number: formData.lot_number,
               stock_type: effectiveStockType,
-              lot_unit_cost: formData.lot_unit_cost !== '' ? Number(formData.lot_unit_cost) : null,
               company_id: profile?.company_id
             }])
         }
@@ -622,7 +619,6 @@ export default function TransactionsPage() {
       lot_number: '',
       transaction_date: '',
       stock_type: '일반',
-      lot_unit_cost: '',
       return_of_transaction_id: '',
       quarantine: false,
       internal_use_reason: '',
@@ -1135,54 +1131,7 @@ export default function TransactionsPage() {
                         </label>
                       </div>
                     </>
-                  ) : (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      재고 구분 *
-                    </label>
-                    <div className="flex gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setFormData({...formData, stock_type: '일반'})}
-                        className={`flex-1 py-2 rounded-lg border-2 text-sm font-medium transition ${
-                          formData.stock_type === '일반'
-                            ? 'border-blue-500 bg-blue-50 text-blue-700'
-                            : 'border-gray-200 text-gray-500 hover:border-gray-300'
-                        }`}
-                      >
-                        일반
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData({...formData, stock_type: '기획용'})}
-                        className={`flex-1 py-2 rounded-lg border-2 text-sm font-medium transition ${
-                          formData.stock_type === '기획용'
-                            ? 'border-orange-500 bg-orange-50 text-orange-700'
-                            : 'border-gray-200 text-gray-500 hover:border-gray-300'
-                        }`}
-                      >
-                        기획용
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-400 mt-1">기획세트 출고 시 기획용 재고만 차감됩니다</p>
-                  </div>
-                  )}
-                  {formData.stock_type === '기획용' && formData.sub_type !== '반품' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        이번 입고 원가 <span className="text-gray-400 font-normal">(원/개)</span>
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        placeholder="미입력 시 제품 기본원가 사용"
-                        value={formData.lot_unit_cost}
-                        onChange={(e) => setFormData({...formData, lot_unit_cost: e.target.value})}
-                        className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                      />
-                      <p className="text-xs text-gray-400 mt-1">OEM 납품가가 기존과 다를 때 입력하세요</p>
-                    </div>
-                  )}
+                  ) : null}
                 </>
               )}
               <div className="md:col-span-2">
