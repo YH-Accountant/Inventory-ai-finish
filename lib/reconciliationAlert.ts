@@ -190,6 +190,81 @@ export async function runReconciliationAlertForCompany(
   return result
 }
 
+// ── 발주확인서 회수 침묵 감지: 거래처가 po-confirm@attude.uk로 회신을 안 하면 자동 웹훅이
+// 아예 동작하지 않아 시스템이 스스로 알아챌 방법이 없다. 그래서 "발주서는 보냈는데(po_sent_at)
+// 며칠이 지나도 확정일(confirmed_date)이 안 채워진 건"을 따로 감지해 기안자에게 리마인드한다.
+// (기안자가 전화 등으로 직접 확인하거나, 문서 상세의 "납기 확정"으로 수동 입력하게 유도)
+export async function runPoConfirmationSilenceReminder(
+  companyId: string,
+  supabase: SupabaseClient
+): Promise<{ sent: boolean; count: number }> {
+  const { data: companyData } = await supabase
+    .from('companies')
+    .select('name, po_confirmation_reminder_days')
+    .eq('id', companyId)
+    .single()
+  const companyName = companyData?.name || '회사'
+  const reminderDays = companyData?.po_confirmation_reminder_days ?? 3
+  const cutoff = new Date(Date.now() - reminderDays * 24 * 60 * 60 * 1000).toISOString()
+
+  const { data: silentDocs } = await supabase
+    .from('approval_documents')
+    .select('id, order_number, supplier_name, po_sent_at, requested_by_user_id, requested_by')
+    .eq('company_id', companyId)
+    .eq('doc_type', '발주품의서')
+    .eq('status', '승인')
+    .is('confirmed_date', null)
+    .is('po_confirmation_reminder_sent_at', null)
+    .not('po_sent_at', 'is', null)
+    .lte('po_sent_at', cutoff)
+
+  if (!silentDocs || silentDocs.length === 0) return { sent: false, count: 0 }
+
+  // 기안자별로 묶어서 각자 자기 건만 받아보게 한다
+  const byUser = new Map<string, AnyRowLike[]>()
+  for (const doc of silentDocs) {
+    if (!doc.requested_by_user_id) continue
+    if (!byUser.has(doc.requested_by_user_id)) byUser.set(doc.requested_by_user_id, [])
+    byUser.get(doc.requested_by_user_id)!.push(doc)
+  }
+  if (byUser.size === 0) return { sent: false, count: 0 }
+
+  const { data: users } = await supabase
+    .from('profiles').select('id, email').in('id', Array.from(byUser.keys()))
+  const emailById = new Map((users || []).map((u: AnyRowLike) => [u.id, u.email]))
+
+  let anySent = false
+  for (const [userId, docs] of byUser) {
+    const email = emailById.get(userId)
+    if (!email) continue
+    const rows = docs.map((d: AnyRowLike, i: number) => `
+      <tr style="border-bottom:1px solid #f0f0f0;">
+        <td style="padding:10px 8px;font-weight:500;">${i + 1}. ${d.supplier_name || '(거래처 미상)'}</td>
+        <td style="padding:10px 8px;color:#666;">${d.order_number || '-'}</td>
+        <td style="padding:10px 8px;text-align:right;">발주서 발송 ${new Date(d.po_sent_at).toLocaleDateString('ko-KR')}</td>
+      </tr>`).join('')
+    const html = buildEmailHtml(companyName, `의 발주서를 보낸 지 ${reminderDays}일이 지났는데도 거래처 발주확인서 회신이 없는 건이 있습니다.`, [
+      { label: '📮 발주확인서 회신 없음 — 직접 확인 필요', color: '#d97706', rows, count: docs.length }
+    ])
+    const { error } = await resend.emails.send({
+      from: '재고관리 AI <notify@attude.uk>',
+      to: email,
+      subject: `[재고관리 AI] 발주확인서 회신 없음 - ${docs.length}건`,
+      html
+    })
+    if (!error) {
+      anySent = true
+      await supabase.from('approval_documents')
+        .update({ po_confirmation_reminder_sent_at: new Date().toISOString() })
+        .in('id', docs.map((d: AnyRowLike) => d.id))
+    } else {
+      console.error('📧 발주확인서 회신없음 리마인드 발송 실패:', error)
+    }
+  }
+
+  return { sent: anySent, count: silentDocs.length }
+}
+
 // ── 내부사용 반출: 건별 사전품의 대신 주간요약 + 월말확인의 이중 점검으로 대체 ──
 // (근거: 회사가 원래 월말 실사 1회에만 의존해 월중 공백이 있었음 → 주간요약으로 검토 주기를 앞당기고,
 //  월말엔 AI 리포트 확인을 직접 유도해 반드시 인지시킨다.)

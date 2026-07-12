@@ -14,6 +14,7 @@ interface CompanySettings {
   inventory_unit: string
   reconciliation_grace_days: number
   outbound_grace_days: number
+  po_confirmation_reminder_days: number
   shipping_cutoff_time: string
 }
 
@@ -33,6 +34,7 @@ export default function SettingsPage() {
     inventory_unit: '개',
     reconciliation_grace_days: 3,
     outbound_grace_days: 0,
+    po_confirmation_reminder_days: 3,
     shipping_cutoff_time: '15:00'
   })
   const [loading, setLoading] = useState(true)
@@ -46,7 +48,7 @@ export default function SettingsPage() {
   async function fetchSettings() {
     const { data } = await supabase
       .from('companies')
-      .select('name, industry, default_shelf_life_months, shelf_life_warning_ratio, inventory_unit, reconciliation_grace_days, outbound_grace_days, shipping_cutoff_time')
+      .select('name, industry, default_shelf_life_months, shelf_life_warning_ratio, inventory_unit, reconciliation_grace_days, outbound_grace_days, po_confirmation_reminder_days, shipping_cutoff_time')
       .eq('id', profile!.company_id!)
       .single()
 
@@ -59,6 +61,7 @@ export default function SettingsPage() {
         inventory_unit: data.inventory_unit || '개',
         reconciliation_grace_days: data.reconciliation_grace_days ?? 3,
         outbound_grace_days: data.outbound_grace_days ?? 0,
+        po_confirmation_reminder_days: data.po_confirmation_reminder_days ?? 3,
         shipping_cutoff_time: (data.shipping_cutoff_time || '15:00').slice(0, 5)
       })
     }
@@ -91,6 +94,7 @@ export default function SettingsPage() {
         inventory_unit: settings.inventory_unit,
         reconciliation_grace_days: settings.reconciliation_grace_days,
         outbound_grace_days: settings.outbound_grace_days,
+        po_confirmation_reminder_days: settings.po_confirmation_reminder_days,
         shipping_cutoff_time: settings.shipping_cutoff_time
       })
       .eq('id', profile.company_id)
@@ -273,6 +277,25 @@ export default function SettingsPage() {
               max="30"
               value={settings.outbound_grace_days}
               onChange={(e) => setSettings(prev => ({ ...prev, outbound_grace_days: Number(e.target.value) }))}
+              className="w-32 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="ml-2 text-gray-500 text-sm">일</span>
+          </div>
+
+          {/* 발주확인서 회신없음 리마인드 */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              발주확인서 회신없음 리마인드
+            </label>
+            <p className="text-xs text-gray-400 mb-2">
+              발주서를 보낸 뒤 며칠이 지나도 거래처 발주확인서 회신(자동 회수)이 없으면 기안자에게 알립니다. 거래처가 지정 이메일로 회신하지 않은 경우를 위한 안전망입니다.
+            </p>
+            <input
+              type="number"
+              min="0"
+              max="30"
+              value={settings.po_confirmation_reminder_days}
+              onChange={(e) => setSettings(prev => ({ ...prev, po_confirmation_reminder_days: Number(e.target.value) }))}
               className="w-32 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <span className="ml-2 text-gray-500 text-sm">일</span>

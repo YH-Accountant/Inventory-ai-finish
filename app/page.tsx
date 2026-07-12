@@ -101,6 +101,7 @@ export default function Home() {
   const [confirmingMonthlyReport, setConfirmingMonthlyReport] = useState(false)
   const [pendingReceipts, setPendingReceipts] = useState<{ id: string; quantity: number; created_at: string; products: { product_name: string } | null }[]>([])
   const [confirmingReceiptId, setConfirmingReceiptId] = useState<string | null>(null)
+  const [poSilenceDocs, setPoSilenceDocs] = useState<{ id: string; order_number: string | null; supplier_name: string | null; po_sent_at: string }[]>([])
 
   // Command bar
   const [command, setCommand] = useState('')
@@ -125,6 +126,7 @@ export default function Home() {
     fetchData()
     loadActionAlerts(profile.company_id)
     loadPendingReceipts()
+    loadPoSilenceAlerts(profile.company_id)
     setRecentCmds(getRecentCommands())
   }, [profile?.company_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -191,6 +193,27 @@ export default function Home() {
     const unmatchedCount = inbound.unmatched.length + outbound.unmatched.length
     setActionAlerts({ overdueCount, evidenceCount, unmatchedCount })
     setMonthlyReportConfirmedAt(companyData?.monthly_report_confirmed_at ?? null)
+  }
+
+  // 발주서는 보냈는데(po_sent_at) 거래처 발주확인서 회신이 없어 확정일이 안 채워진 건.
+  // 창고담당자가 관여할 일이 아니라(거래처 컨택은 본사 업무) 렌더링 시 role로 걸러서 본사에게만 보여준다.
+  async function loadPoSilenceAlerts(companyId: string) {
+    const { data: companyData } = await supabase
+      .from('companies').select('po_confirmation_reminder_days').eq('id', companyId).single()
+    const reminderDays = companyData?.po_confirmation_reminder_days ?? 3
+    const cutoff = new Date(Date.now() - reminderDays * 24 * 60 * 60 * 1000).toISOString()
+
+    const { data } = await supabase
+      .from('approval_documents')
+      .select('id, order_number, supplier_name, po_sent_at')
+      .eq('company_id', companyId)
+      .eq('doc_type', '발주품의서')
+      .eq('status', '승인')
+      .is('confirmed_date', null)
+      .not('po_sent_at', 'is', null)
+      .lte('po_sent_at', cutoff)
+      .order('po_sent_at', { ascending: true })
+    setPoSilenceDocs(data || [])
   }
 
   // 월말(마지막 3일) + 이번 달 미확인 시에만 리포트 확인 배너를 띄운다.
@@ -447,6 +470,32 @@ export default function Home() {
                     확인 완료
                   </button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── 발주확인서 회신 없음: 거래처 컨택은 본사 업무라 창고담당자에게는 표시 안 함 ── */}
+          {profile?.role !== '창고' && poSilenceDocs.length > 0 && (
+            <div className="bg-white border border-violet-300 rounded-xl p-4 mb-4 shadow-sm">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xl">📮</span>
+                <span className="font-bold text-violet-700">발주확인서 회신 없음 ({poSilenceDocs.length}건)</span>
+                <span className="text-xs text-gray-400">거래처에 직접 확인이 필요합니다</span>
+              </div>
+              <div className="space-y-2">
+                {poSilenceDocs.map(d => {
+                  const days = Math.floor((Date.now() - new Date(d.po_sent_at).getTime()) / 86400000)
+                  return (
+                    <Link
+                      key={d.id}
+                      href={`/approvals/${d.id}`}
+                      className="flex items-center justify-between text-sm border-t pt-2 first:border-t-0 first:pt-0 hover:text-violet-700"
+                    >
+                      <span>{d.supplier_name || '(거래처 미상)'} {d.order_number && <span className="text-gray-400">· {d.order_number}</span>}</span>
+                      <span className="text-violet-600 text-xs shrink-0">발주서 발송 D+{days}</span>
+                    </Link>
+                  )
+                })}
               </div>
             </div>
           )}
