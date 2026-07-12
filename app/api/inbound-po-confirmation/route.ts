@@ -18,17 +18,29 @@ function extractConfirmedDate(text: string): string | null {
 // pdf-parse(정확히는 내부적으로 쓰는 pdfjs-dist)가 모듈 로딩 시점에 브라우저 전용 DOMMatrix를
 // 무조건 참조해서, Node 서버리스 환경에선 폴리필 없이는 아예 텍스트 추출이 안 됨 (에러가 조용히
 // 삼켜져서 "스캔본이라 텍스트 없음"과 구분이 안 됐던 원인). import 전에 전역으로 채워준다.
-async function ensureDomMatrixPolyfill(): Promise<void> {
-  if (typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix !== 'undefined') return
-  const { default: DOMMatrixPolyfill } = await import('dommatrix')
-  ;(globalThis as { DOMMatrix?: unknown }).DOMMatrix = DOMMatrixPolyfill
+let workerConfigured = false
+async function ensurePdfParseRuntime(): Promise<void> {
+  if (typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix === 'undefined') {
+    const { default: DOMMatrixPolyfill } = await import('dommatrix')
+    ;(globalThis as { DOMMatrix?: unknown }).DOMMatrix = DOMMatrixPolyfill
+  }
+  // pdfjs-dist는 실행 시점에 별도 워커 파일(pdf.worker.mjs)을 동적으로 찾는데, Vercel 서버리스
+  // 번들의 파일 트레이싱이 그 경로를 못 잡아서 "Setting up fake worker failed"로 죽는다.
+  // pdf-parse가 워커 코드를 통째로 data URL 문자열로 내장해서 제공해주는 걸(getData) 그대로
+  // workerSrc로 지정하면 파일시스템에 전혀 의존하지 않고 끝난다.
+  if (!workerConfigured) {
+    const { getData } = await import('pdf-parse/worker')
+    const { PDFParse } = await import('pdf-parse')
+    PDFParse.setWorker(getData())
+    workerConfigured = true
+  }
 }
 
 // PDF(텍스트 기반)에서 본문 텍스트 추출. 스캔본 등 텍스트가 없으면 null.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function extractPdfText(buffer: Buffer): Promise<{ text: string | null; error: string | null }> {
   try {
-    await ensureDomMatrixPolyfill()
+    await ensurePdfParseRuntime()
     const { PDFParse } = await import('pdf-parse')
     const parser = new PDFParse({ data: buffer })
     const result = await parser.getText()
