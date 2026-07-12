@@ -77,8 +77,7 @@ export default function TransactionsPage() {
   // 폼 데이터
   const [formData, setFormData] = useState({
     product_id: '',
-    warehouse_id: '',        // 출고 창고 (from)
-    to_warehouse_id: '',     // 입고 창고 (to) - 이동 시에만
+    warehouse_id: '',
     type: '입고',
     sub_type: '',            // 출고 사유: 판매/샘플/폐기 | 조정 시 없음
     quantity: 0,
@@ -255,12 +254,6 @@ export default function TransactionsPage() {
       }
     }
 
-    // 이동인 경우 목적지 창고 필수
-    if (formData.type === '이동' && !formData.to_warehouse_id) {
-      alert('입고 창고(목적지)를 선택해주세요.')
-      return
-    }
-
     // 출고인 경우 사유 필수
     if (formData.type === '출고' && !formData.sub_type) {
       alert('출고 사유를 선택해주세요. (판매 / 내부사용 / 폐기)')
@@ -294,80 +287,7 @@ export default function TransactionsPage() {
       ? new Date(formData.transaction_date + 'T09:00:00').toISOString()
       : new Date().toISOString()
 
-    // 이동 처리
-    if (formData.type === '이동') {
-      const fromWarehouse = warehouses.find(w => w.id === formData.warehouse_id)
-      const toWarehouse = warehouses.find(w => w.id === formData.to_warehouse_id)
-
-      // 이동 시 출발 창고 재고 부족 체크
-      const { data: fromInvCheck } = await supabase
-        .from('inventory')
-        .select('quantity')
-        .eq('product_id', formData.product_id)
-        .eq('warehouse_id', formData.warehouse_id)
-        .gt('quantity', 0)
-
-      const fromTotal = (fromInvCheck || []).reduce((sum, inv) => sum + inv.quantity, 0)
-      if (fromTotal < formData.quantity) {
-        alert(`재고 부족!\n\n${fromWarehouse?.name} 가용 재고: ${fromTotal.toLocaleString()}개\n요청: ${formData.quantity.toLocaleString()}개`)
-        return
-      }
-
-      // from 창고 재고 감소
-      const { data: fromInv } = await supabase
-        .from('inventory')
-        .select('id, quantity')
-        .eq('product_id', formData.product_id)
-        .eq('warehouse_id', formData.warehouse_id)
-        .single()
-
-      if (fromInv) {
-        await supabase.from('inventory')
-          .update({ quantity: fromInv.quantity - formData.quantity, updated_at: new Date().toISOString() })
-          .eq('id', fromInv.id)
-      }
-
-      // to 창고 재고 증가
-      const { data: toInv } = await supabase
-        .from('inventory')
-        .select('id, quantity')
-        .eq('product_id', formData.product_id)
-        .eq('warehouse_id', formData.to_warehouse_id)
-        .single()
-
-      if (toInv) {
-        await supabase.from('inventory')
-          .update({ quantity: toInv.quantity + formData.quantity, updated_at: new Date().toISOString() })
-          .eq('id', toInv.id)
-      } else {
-        await supabase.from('inventory').insert([{
-          product_id: formData.product_id,
-          warehouse_id: formData.to_warehouse_id,
-          quantity: formData.quantity,
-          company_id: profile?.company_id
-        }])
-      }
-
-      // resulting_quantity: 이동 후 from 창고 잔액
-      const moveResultingQty = await getTotalInventory(formData.product_id, formData.warehouse_id)
-
-      // 이동 트랜잭션 (단일 레코드)
-      await supabase.from('transactions').insert([{
-        product_id: formData.product_id,
-        warehouse_id: formData.warehouse_id,
-        type: '이동',
-        sub_type: null,
-        quantity: formData.quantity,
-        resulting_quantity: moveResultingQty,
-        channel: null,
-        note: `${fromWarehouse?.name} → ${toWarehouse?.name}${formData.note ? ` (${formData.note})` : ''}`,
-        recorded_by: profile?.name || null,
-        created_at: transactionDate,
-        company_id: profile?.company_id
-      }])
-
-      alert(`이동 완료!\n${fromWarehouse?.name} → ${toWarehouse?.name}`)
-    } else if (formData.type === '조정') {
+    if (formData.type === '조정') {
       // ── 조정 처리 ──
       const targetQty = formData.quantity
       const currentTotal = await getTotalInventory(formData.product_id, formData.warehouse_id)
@@ -645,7 +565,6 @@ export default function TransactionsPage() {
     setFormData({
       product_id: '',
       warehouse_id: '',
-      to_warehouse_id: '',
       type: '입고',
       sub_type: '',
       quantity: 0,
@@ -865,7 +784,7 @@ export default function TransactionsPage() {
                       type="radio"
                       value="입고"
                       checked={formData.type === '입고'}
-                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: '', sub_type: ''})}
+                      onChange={(e) => setFormData({...formData, type: e.target.value, sub_type: ''})}
                       className="mr-2"
                     />
                     <span className="text-green-600 font-medium">입고 (+)</span>
@@ -875,7 +794,7 @@ export default function TransactionsPage() {
                       type="radio"
                       value="출고"
                       checked={formData.type === '출고'}
-                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: '', sub_type: ''})}
+                      onChange={(e) => setFormData({...formData, type: e.target.value, sub_type: ''})}
                       className="mr-2"
                     />
                     <span className="text-red-600 font-medium">출고 (-)</span>
@@ -883,19 +802,9 @@ export default function TransactionsPage() {
                   <label className="flex items-center">
                     <input
                       type="radio"
-                      value="이동"
-                      checked={formData.type === '이동'}
-                      onChange={(e) => setFormData({...formData, type: e.target.value, sub_type: ''})}
-                      className="mr-2"
-                    />
-                    <span className="text-blue-600 font-medium">이동 (→)</span>
-                  </label>
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
                       value="조정"
                       checked={formData.type === '조정'}
-                      onChange={(e) => setFormData({...formData, type: e.target.value, to_warehouse_id: '', sub_type: ''})}
+                      onChange={(e) => setFormData({...formData, type: e.target.value, sub_type: ''})}
                       className="mr-2"
                     />
                     <span className="text-orange-600 font-medium">조정 (실사)</span>
@@ -1029,7 +938,7 @@ export default function TransactionsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {formData.type === '이동' ? '출고 창고 (from) *' : '창고 *'}
+                  창고 *
                 </label>
                 <select
                   required
@@ -1037,7 +946,7 @@ export default function TransactionsPage() {
                   onChange={(e) => setFormData({...formData, warehouse_id: e.target.value})}
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
                 >
-                  <option value="">{formData.type === '이동' ? '출고 창고 선택' : '창고 선택'}</option>
+                  <option value="">창고 선택</option>
                   {warehouses.map((warehouse) => (
                     <option key={warehouse.id} value={warehouse.id}>
                       {warehouse.name}
@@ -1045,26 +954,6 @@ export default function TransactionsPage() {
                   ))}
                 </select>
               </div>
-              {formData.type === '이동' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    입고 창고 (to) *
-                  </label>
-                  <select
-                    required
-                    value={formData.to_warehouse_id}
-                    onChange={(e) => setFormData({...formData, to_warehouse_id: e.target.value})}
-                    className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">입고 창고 선택</option>
-                    {warehouses.filter(w => w.id !== formData.warehouse_id).map((warehouse) => (
-                      <option key={warehouse.id} value={warehouse.id}>
-                        {warehouse.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   채널 (출고 시)
@@ -1219,7 +1108,7 @@ export default function TransactionsPage() {
                       : 'bg-blue-600 hover:bg-blue-700'
                   }`}
                 >
-                  {formData.type === '입고' ? '입고 등록' : formData.type === '출고' ? '출고 등록' : '이동 등록'}
+                  {formData.type === '입고' ? '입고 등록' : formData.type === '출고' ? '출고 등록' : '조정 등록'}
                 </button>
               </div>
             </form>
@@ -1262,7 +1151,7 @@ export default function TransactionsPage() {
                   return (
                   <div key={tx.id} className="flex items-center justify-between border-b py-1">
                     <div className="flex items-center gap-2">
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium shrink-0 ${
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium shrink-0 text-center leading-tight ${
                         isTransfer
                           ? 'bg-blue-100 text-blue-800'
                           : tx.type === '입고'
@@ -1271,8 +1160,8 @@ export default function TransactionsPage() {
                           ? 'bg-orange-100 text-orange-800'
                           : 'bg-red-100 text-red-800'
                       }`}>
-                        {displayType}
-                        {tx.sub_type && ` (${tx.sub_type})`}
+                        <span className="block">{displayType}</span>
+                        {tx.sub_type && <span className="block">({tx.sub_type})</span>}
                       </span>
                       <div className="min-w-0">
                         <p className="font-medium text-sm truncate">

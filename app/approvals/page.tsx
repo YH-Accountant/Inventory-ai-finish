@@ -7,9 +7,9 @@ import * as XLSX from 'xlsx'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/app/contexts/AuthContext'
 import Navbar from '@/app/components/Navbar'
-import { getInboundReconciliation, getOutboundReconciliation, getTransferReconciliation, getDocumentCompletionByType, ReconciliationProgressRow, DocumentCompletion } from '@/lib/reconciliation'
+import { getInboundReconciliation, getOutboundReconciliation, getDocumentCompletionByType, ReconciliationProgressRow, DocumentCompletion } from '@/lib/reconciliation'
 
-type DocType = '발주품의서' | '출고지시서' | '이동품의서'
+type DocType = '발주품의서' | '출고지시서'
 type Status = '대기' | '승인' | '반려'
 type TabFilter = Status | '완료'
 
@@ -55,7 +55,6 @@ interface ApprovalDocument {
   doc_type: DocType
   status: Status
   warehouse_id: string | null
-  to_warehouse_id: string | null
   channel: string | null
   memo: string | null
   expected_date: string | null
@@ -69,7 +68,6 @@ interface ApprovalDocument {
   approved_at: string | null
   created_at: string
   warehouses: { name: string } | null
-  to_warehouse: { name: string } | null
   approval_document_items: DocItem[]
   approval_steps: ApprovalStep[]
 }
@@ -82,7 +80,7 @@ interface ItemRow {
   unit_price: string
 }
 
-const DOC_TYPES: DocType[] = ['발주품의서', '출고지시서', '이동품의서']
+const DOC_TYPES: DocType[] = ['발주품의서', '출고지시서']
 const STATUS_TABS: TabFilter[] = ['대기', '승인', '완료', '반려']
 
 export default function ApprovalsPage() {
@@ -102,7 +100,6 @@ export default function ApprovalsPage() {
   const [formData, setFormData] = useState({
     doc_type: '발주품의서' as DocType,
     warehouse_id: '',
-    to_warehouse_id: '',
     channel: '',
     memo: '',
     expected_date: '',
@@ -144,9 +141,7 @@ export default function ApprovalsPage() {
     if (!profile?.company_id) return
     const { progress } = docType === '발주품의서'
       ? await getInboundReconciliation(profile.company_id)
-      : docType === '출고지시서'
-      ? await getOutboundReconciliation(profile.company_id)
-      : await getTransferReconciliation(profile.company_id)
+      : await getOutboundReconciliation(profile.company_id)
     const map: Record<string, ReconciliationProgressRow> = {}
     progress.forEach(p => { map[`${p.document_id}::${p.product_id}`] = p })
     setProgressMap(map)
@@ -193,11 +188,10 @@ export default function ApprovalsPage() {
     const { data: documentsData } = await supabase
       .from('approval_documents')
       .select(`
-        id, doc_type, status, warehouse_id, to_warehouse_id, channel, memo, expected_date,
+        id, doc_type, status, warehouse_id, channel, memo, expected_date,
         confirmed_date, supplier_name, supplier_id, order_number,
         requested_by, requested_by_user_id, approved_by, approved_at, created_at,
         warehouses:warehouse_id (name),
-        to_warehouse:to_warehouse_id (name),
         approval_document_items ( id, product_id, quantity, products (product_name, product_code) ),
         approval_steps ( id, step_order, status, acted_by_name, acted_at )
       `)
@@ -228,7 +222,7 @@ export default function ApprovalsPage() {
   }
 
   function resetForm() {
-    setFormData({ doc_type: '발주품의서', warehouse_id: '', to_warehouse_id: '', channel: '', memo: '', expected_date: '', supplier_id: '' })
+    setFormData({ doc_type: '발주품의서', warehouse_id: '', channel: '', memo: '', expected_date: '', supplier_id: '' })
     setItems([{ product_id: '', quantity: 0, isNew: false, newProductName: '', unit_price: '' }])
     setChannelMode('그 외')
     setChannelOrderFile(null)
@@ -370,10 +364,6 @@ export default function ApprovalsPage() {
       alert('창고를 선택해주세요.')
       return
     }
-    if (formData.doc_type === '이동품의서' && !formData.to_warehouse_id) {
-      alert('도착 창고를 선택해주세요.')
-      return
-    }
     if (formData.doc_type === '발주품의서' && !formData.expected_date) {
       alert('희망 납기일을 입력해주세요.')
       return
@@ -428,7 +418,6 @@ export default function ApprovalsPage() {
           doc_type: formData.doc_type,
           status: '대기',
           warehouse_id: formData.warehouse_id,
-          to_warehouse_id: formData.doc_type === '이동품의서' ? formData.to_warehouse_id : null,
           channel: formData.doc_type === '출고지시서' ? (formData.channel || null) : null,
           channel_order_file_url: channelOrderFileUrl,
           memo: formData.memo || null,
@@ -559,7 +548,7 @@ export default function ApprovalsPage() {
                           value={dt}
                           checked={formData.doc_type === dt}
                           onChange={() => {
-                            setFormData({ ...formData, doc_type: dt, to_warehouse_id: '', channel: '' })
+                            setFormData({ ...formData, doc_type: dt, channel: '' })
                             setChannelOrderFile(null)
                             setUnmatchedNames([])
                             setBatchOrderAt(null)
@@ -599,7 +588,7 @@ export default function ApprovalsPage() {
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      {formData.doc_type === '이동품의서' ? '출발 창고 *' : formData.doc_type === '발주품의서' ? '입고 대상 창고 *' : '출고 창고 *'}
+                      {formData.doc_type === '발주품의서' ? '입고 대상 창고 *' : '출고 창고 *'}
                     </label>
                     <select
                       required
@@ -613,23 +602,6 @@ export default function ApprovalsPage() {
                       ))}
                     </select>
                   </div>
-
-                  {formData.doc_type === '이동품의서' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">도착 창고 *</label>
-                      <select
-                        required
-                        value={formData.to_warehouse_id}
-                        onChange={(e) => setFormData({ ...formData, to_warehouse_id: e.target.value })}
-                        className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value="">창고 선택</option>
-                        {warehouses.filter(w => w.id !== formData.warehouse_id).map(w => (
-                          <option key={w.id} value={w.id}>{w.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
 
                   {formData.doc_type === '출고지시서' && (
                     <div>
@@ -881,9 +853,7 @@ export default function ApprovalsPage() {
                               {doc.order_number || '문서 보기'}
                             </Link>
                             {doc.supplier_name && <span className="ml-2">{doc.supplier_name} ·</span>}{' '}
-                            {doc.doc_type === '이동품의서'
-                              ? `${doc.warehouses?.name} → ${doc.to_warehouse?.name}`
-                              : doc.doc_type === '출고지시서'
+                            {doc.doc_type === '출고지시서'
                               ? `${doc.warehouses?.name}${doc.channel ? ` → ${doc.channel}` : ''}`
                               : doc.warehouses?.name}
                           </p>
@@ -895,7 +865,7 @@ export default function ApprovalsPage() {
                                   {item.products?.product_name} — {item.quantity.toLocaleString()}개
                                   {p && (
                                     <span className={`ml-2 text-xs ${p.remaining_qty > 0 ? 'text-orange-500' : 'text-green-600'}`}>
-                                      ({docTypeTab === '발주품의서' ? '입고' : docTypeTab === '출고지시서' ? '출고' : '이동'} {p.actual_qty.toLocaleString()}/{p.approved_qty.toLocaleString()}
+                                      ({docTypeTab === '발주품의서' ? '입고' : '출고'} {p.actual_qty.toLocaleString()}/{p.approved_qty.toLocaleString()}
                                       {p.remaining_qty > 0 ? ` · 미달 ${p.remaining_qty.toLocaleString()}` : ' · 완료'})
                                     </span>
                                   )}

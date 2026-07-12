@@ -6,7 +6,7 @@ import { supabase as defaultClient } from '@/lib/supabase'
 // 발생한 실물기록만 그 문서 몫으로 인정해 소진시키고, 미달분(progress)과 증빙 없는
 // 초과분(unmatched)을 분리해서 반환한다. 승인 이전에 이미 있던 실물기록은 이 문서와
 // 무관하므로 절대 매칭되지 않고 그대로 unmatched(증빙 없음)로 남는다.
-// 기준 키: 입고=제품+창고, 출고=제품+채널, 이동=제품+출발창고+도착창고.
+// 기준 키: 입고=제품+창고, 출고=제품+채널.
 
 // 예정일(expected_date) + 유예(grace_days)를 넘겼는지 판단하는 공용 헬퍼.
 // expected_date가 없는 문서(마이그레이션 이전 데이터 등)는 판단 불가하므로 true(기존처럼 항상 노출)로 하위호환 처리.
@@ -17,17 +17,15 @@ export function isOverdue(expectedDate: string | null, graceDays: number): boole
   return new Date() > due
 }
 
-// 이동품의서는 확정납기 개념이 없어 항상 expected_date 기준(=항상 즉시노출)으로 판단.
 // 발주/출고는 거래처가 실제 확정해준 confirmed_date가 있어야 기한초과 여부를 판단할 수 있음 — 없으면 "확정 대기".
 //
 // 출고는 회사가 스스로 정한 마감 규칙(예: 15시 이전 주문=당일출고)의 결과로 확정일이 정해지는 거라
-// 외부 변수로 밀릴 여지가 거의 없다 — 그래서 입고/이동과 다른(보통 훨씬 짧은) 유예일수를 따로 받는다.
+// 외부 변수로 밀릴 여지가 거의 없다 — 그래서 입고와 다른(보통 훨씬 짧은) 유예일수를 따로 받는다.
 export function classifyMissing(
-  row: { source: '입고' | '출고' | '이동'; expected_date: string | null; confirmed_date: string | null },
+  row: { source: '입고' | '출고'; expected_date: string | null; confirmed_date: string | null },
   graceDays: { default: number; outbound: number }
 ): 'overdue' | 'pending' | 'awaiting' {
   const grace = row.source === '출고' ? graceDays.outbound : graceDays.default
-  if (row.source === '이동') return isOverdue(row.expected_date, grace) ? 'overdue' : 'pending'
   if (!row.confirmed_date) return 'awaiting'
   return isOverdue(row.confirmed_date, grace) ? 'overdue' : 'pending'
 }
@@ -67,18 +65,17 @@ type AnyRow = any
 async function reconcile(
   client: SupabaseClient,
   companyId: string,
-  docType: '발주품의서' | '출고지시서' | '이동품의서',
-  txType: '입고' | '출고' | '이동',
+  docType: '발주품의서' | '출고지시서',
+  txType: '입고' | '출고',
   docSecondaryKey: (doc: AnyRow) => { key: string; display: string },
   txSecondaryKey: (tx: AnyRow) => { key: string; display: string }
 ): Promise<{ progress: ReconciliationProgressRow[]; unmatched: UnmatchedRow[] }> {
   const { data: docs } = await client
     .from('approval_documents')
     .select(`
-      id, warehouse_id, to_warehouse_id, channel, approved_by, approved_at, created_at,
+      id, warehouse_id, channel, approved_by, approved_at, created_at,
       expected_date, confirmed_date, stage1_alert_sent_at, escalated_at,
       warehouses:warehouse_id ( name ),
-      to_warehouse:to_warehouse_id ( name ),
       approval_document_items ( product_id, quantity, products ( product_name, product_code ) )
     `)
     .eq('company_id', companyId)
@@ -188,25 +185,6 @@ export function getOutboundReconciliation(companyId: string, client: SupabaseCli
   )
 }
 
-export function getTransferReconciliation(companyId: string, client: SupabaseClient = defaultClient) {
-  return reconcile(
-    client, companyId, '이동품의서', '이동',
-    (doc: AnyRow) => {
-      const to = doc.to_warehouse?.name || '(도착창고 미상)'
-      return { key: `${doc.warehouse_id}::${to}`, display: `${doc.warehouses?.name || '(창고 미상)'} → ${to}` }
-    },
-    (tx: AnyRow) => {
-      // 이동 실적은 note에 "출발창고 → 도착창고" 형태로만 저장되어 있어 창고명으로 매칭
-      let toName = '(도착창고 미상)'
-      if (tx.note) {
-        const match = tx.note.match(/^(.+?) → (.+?)(?:\s*\(|$)/)
-        if (match) toName = match[2].trim()
-      }
-      return { key: `${tx.warehouse_id}::${toName}`, display: `${tx.warehouses?.name || '(창고 미상)'} → ${toName}` }
-    }
-  )
-}
-
 // ── 3자 대사 확장: 실물기록(transactions) ↔ 외부 제3자 증빙(거래명세서/운송장) ──
 // 위의 reconcile()/get*Reconciliation은 "승인 Q ↔ 실물 Q"(1↔2 다리)만 다루며 그대로 둔다.
 // 아래 함수들은 "실물 Q ↔ 외부증빙 Q"(2↔3 다리)만 별도로 체크해, 조합하면 3자 대사가 완성된다.
@@ -290,17 +268,15 @@ export interface DocumentCompletion {
 
 export async function getDocumentCompletionByType(
   companyId: string,
-  docType: '발주품의서' | '출고지시서' | '이동품의서',
+  docType: '발주품의서' | '출고지시서',
   client: SupabaseClient = defaultClient
 ): Promise<Record<string, DocumentCompletion>> {
-  const txType = docType === '발주품의서' ? '입고' : docType === '출고지시서' ? '출고' : '이동'
-  const needsEvidence = docType !== '이동품의서' // 이동은 증빙(거래명세서/운송장) 개념이 없음
+  const txType = docType === '발주품의서' ? '입고' : '출고'
 
   const { data: docs } = await client
     .from('approval_documents')
     .select(`
-      id, warehouse_id, to_warehouse_id, channel, approved_at,
-      to_warehouse:to_warehouse_id ( name ),
+      id, warehouse_id, channel, approved_at,
       approval_document_items ( product_id, quantity )
     `)
     .eq('company_id', companyId)
@@ -316,18 +292,11 @@ export async function getDocumentCompletionByType(
 
   const docKey = (doc: AnyRow): string => {
     if (docType === '발주품의서') return `${doc.warehouse_id}`
-    if (docType === '출고지시서') return `${doc.channel || ''}`
-    return `${doc.warehouse_id}::${doc.to_warehouse?.name || '(도착창고 미상)'}`
+    return `${doc.channel || ''}`
   }
   const txKey = (tx: AnyRow): string => {
     if (docType === '발주품의서') return `${tx.warehouse_id}`
-    if (docType === '출고지시서') return `${tx.channel || ''}`
-    let toName = '(도착창고 미상)'
-    if (tx.note) {
-      const match = tx.note.match(/^(.+?) → (.+?)(?:\s*\(|$)/)
-      if (match) toName = match[2].trim()
-    }
-    return `${tx.warehouse_id}::${toName}`
+    return `${tx.channel || ''}`
   }
 
   interface TxEntry extends MatchedEvidenceTransaction { remaining: number }
@@ -379,7 +348,7 @@ export async function getDocumentCompletionByType(
         { id, quantity, evidence_file_url, evidence_quantity, shipping_type, created_at }
       ))
 
-    const evidenceOk = !needsEvidence || matchedTransactions.every(t => {
+    const evidenceOk = matchedTransactions.every(t => {
       if (docType === '출고지시서' && (t.shipping_type === '자차배송' || t.shipping_type === '직접픽업')) return true
       return !!t.evidence_file_url && t.evidence_quantity === t.quantity
     })

@@ -1,6 +1,6 @@
 import { SupabaseClient } from '@supabase/supabase-js'
 import { Resend } from 'resend'
-import { getInboundReconciliation, getOutboundReconciliation, getTransferReconciliation, classifyMissing } from '@/lib/reconciliation'
+import { getInboundReconciliation, getOutboundReconciliation, classifyMissing } from '@/lib/reconciliation'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -73,16 +73,14 @@ export async function runReconciliationAlertForCompany(
   }
   const cutoffTime = companyData?.shipping_cutoff_time || '15:00'
 
-  const [inbound, outbound, transfer] = await Promise.all([
+  const [inbound, outbound] = await Promise.all([
     getInboundReconciliation(companyId, supabase),
-    getOutboundReconciliation(companyId, supabase),
-    getTransferReconciliation(companyId, supabase)
+    getOutboundReconciliation(companyId, supabase)
   ])
 
   const allMissing = [
     ...inbound.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '입고' as const })),
-    ...outbound.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '출고' as const })),
-    ...transfer.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '이동' as const }))
+    ...outbound.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '출고' as const }))
   ]
   // 거래처 확정 납기일(또는 출고는 회사가 정한 마감규칙) + 유예를 넘긴 건만 적발 대상
   const overdueMissing = allMissing.filter(m => classifyMissing(m, graceBySource) === 'overdue')
@@ -95,8 +93,7 @@ export async function runReconciliationAlertForCompany(
 
   const unmatched = [
     ...inbound.unmatched.map(u => ({ ...u, source: '입고' })),
-    ...outbound.unmatched.map(u => ({ ...u, source: '출고' })),
-    ...transfer.unmatched.map(u => ({ ...u, source: '이동' }))
+    ...outbound.unmatched.map(u => ({ ...u, source: '출고' }))
   ]
 
   const result: ReconciliationAlertResult = {

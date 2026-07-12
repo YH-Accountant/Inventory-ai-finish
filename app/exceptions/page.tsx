@@ -7,7 +7,6 @@ import Navbar from '@/app/components/Navbar'
 import {
   getInboundReconciliation,
   getOutboundReconciliation,
-  getTransferReconciliation,
   getInboundEvidenceExceptions,
   getOutboundEvidenceExceptions,
   classifyMissing,
@@ -17,7 +16,7 @@ import {
   NonTransportRow
 } from '@/lib/reconciliation'
 
-type SourceLabel = '입고' | '출고' | '이동'
+type SourceLabel = '입고' | '출고'
 type EvidenceSourceLabel = '입고' | '출고'
 
 interface LabeledMissing extends ReconciliationProgressRow {
@@ -82,11 +81,10 @@ export default function ExceptionsPage() {
 
   async function load(companyId: string) {
     setLoading(true)
-    const [{ data: companyData }, inbound, outbound, transfer, inboundEvidence, outboundEvidence, { data: completedTx }, { data: confirmedInternalUse }] = await Promise.all([
+    const [{ data: companyData }, inbound, outbound, inboundEvidence, outboundEvidence, { data: completedTx }, { data: confirmedInternalUse }] = await Promise.all([
       supabase.from('companies').select('reconciliation_grace_days, outbound_grace_days').eq('id', companyId).single(),
       getInboundReconciliation(companyId),
       getOutboundReconciliation(companyId),
-      getTransferReconciliation(companyId),
       getInboundEvidenceExceptions(companyId),
       getOutboundEvidenceExceptions(companyId),
       supabase
@@ -115,8 +113,7 @@ export default function ExceptionsPage() {
 
     const allMissing: LabeledMissing[] = [
       ...inbound.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '입고' as SourceLabel })),
-      ...outbound.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '출고' as SourceLabel })),
-      ...transfer.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '이동' as SourceLabel }))
+      ...outbound.progress.filter(p => p.remaining_qty > 0).map(p => ({ ...p, source: '출고' as SourceLabel }))
     ]
     setMissing(allMissing.filter(m => classifyMissing(m, graceBySource) === 'overdue'))
     setPendingMissing(allMissing.filter(m => classifyMissing(m, graceBySource) === 'pending'))
@@ -124,8 +121,7 @@ export default function ExceptionsPage() {
 
     setUnmatched([
       ...inbound.unmatched.map(u => ({ ...u, source: '입고' as SourceLabel })),
-      ...outbound.unmatched.map(u => ({ ...u, source: '출고' as SourceLabel })),
-      ...transfer.unmatched.map(u => ({ ...u, source: '이동' as SourceLabel }))
+      ...outbound.unmatched.map(u => ({ ...u, source: '출고' as SourceLabel }))
     ])
 
     setEvidenceExceptions([
@@ -322,7 +318,7 @@ export default function ExceptionsPage() {
           <div>
             <h1 className="text-xl font-bold text-gray-900">예외 리스트</h1>
             <p className="text-sm text-gray-500 mt-1">
-              승인 증빙(품의서·지시서) 대비 실물 기록을 양방향으로 대조한 결과입니다.
+              승인증빙(품의서, 지시서) 대비 실물 기록을 양방향으로 대조
             </p>
           </div>
 
@@ -332,7 +328,7 @@ export default function ExceptionsPage() {
                 🚨 기한 초과 미기록/미달 ({missing.length}건)
               </h2>
               <p className="text-xs text-gray-400 mt-1">
-                거래처 확정 납기일 + 유예(입고/이동 {graceDays}일, 출고 {outboundGraceDays}일)을 넘겼는데도 실물 처리가 안 됐거나 부족한 건
+                거래처 확정 납기일 + 유예(입고 {graceDays}일, 출고 {outboundGraceDays}일)을 넘겼는데도 실물 처리가 안 됐거나 부족한 건
               </p>
             </div>
             <div className="p-3 md:p-6">

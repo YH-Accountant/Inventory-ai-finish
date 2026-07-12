@@ -46,7 +46,6 @@ interface Message {
     product_name?: string
     quantity?: number
     warehouse?: string
-    to_warehouse?: string  // 창고 이동 시 목적지
     channel?: string
     date?: string  // YYYY-MM-DD 형식
     lot_number?: string  // 입고 시 로트번호 (YYMMDD-01)
@@ -63,7 +62,7 @@ const CHAT_MESSAGES_STORAGE_KEY = 'inventory-ai-chat-messages'
 const DEFAULT_CHAT_MESSAGES: Message[] = [
   {
     role: 'assistant',
-    content: '안녕하세요! 재고관리 AI입니다.\n\n예시: "쿠션A 500개 올리브영 출고"\n           입고(생산)/출고/(내부)이동'
+    content: '안녕하세요! 재고관리 AI입니다.\n\n예시: "쿠션A 500개 올리브영 출고"\n           입고(생산)/출고'
   }
 ]
 
@@ -353,8 +352,6 @@ export default function ChatWidget() {
         ? ` (내부사용: ${confirmed.internal_use_reason}, 수령자 ${confirmed.internal_use_recipient})`
         : confirmed.sub_type ? ` (${confirmed.sub_type})` : ''
       summary = `${confirmed.product_name} ${(confirmed.quantity||0).toLocaleString()}개를 ${confirmed.warehouse}에서 출고합니다${dest}${reasonLabel}.`
-    } else if (confirmed.action === '창고이동') {
-      summary = `${confirmed.product_name} ${(confirmed.quantity||0).toLocaleString()}개를 ${confirmed.warehouse} → ${confirmed.to_warehouse}로 이동합니다.`
     }
 
     setPendingAction(confirmed)
@@ -369,7 +366,7 @@ export default function ChatWidget() {
     if (actionData.action === '입고') {
       availableWarehouses = warehouses
     } else {
-      // 출고/이동: 최신 재고를 직접 조회해서 재고 있는 창고만 선별
+      // 출고: 최신 재고를 직접 조회해서 재고 있는 창고만 선별
       // company_id 필터 없이 product_id(UUID)로만 특정 — RLS가 회사 데이터 보호
       const { data: freshInv } = await supabase
         .from('inventory')
@@ -565,10 +562,10 @@ export default function ChatWidget() {
       : new Date().toISOString()
 
     const noteText = pending.sub_type === '내부사용'
-      ? `[내부사용:${pending.internal_use_reason}] 수령자: ${pending.internal_use_recipient} | AI 채팅으로 등록`
+      ? `[내부사용:${pending.internal_use_reason}] 수령자: ${pending.internal_use_recipient}`
       : pending.channel
-      ? `[${pending.channel}] AI 채팅으로 등록`
-      : 'AI 채팅으로 등록'
+      ? `[${pending.channel}]`
+      : null
 
     const shelfLifeMonths = companyShelfLife
     const today = new Date()
@@ -625,7 +622,7 @@ export default function ChatWidget() {
         sub_type: pending.sub_type,
         quantity,
         channel: pending.channel,
-        note: `${noteText} | ${lotDeductions.join(', ')}`,
+        note: [noteText, lotDeductions.join(', ')].filter(Boolean).join(' | '),
         recorded_by: profile?.name || 'AI',
         created_at: transactionDate,
         company_id: profile?.company_id,
@@ -657,7 +654,7 @@ export default function ChatWidget() {
   async function resolveAction(data: any) {
     // 입출고 기록은 창고담당자만 — 화면(폼)에만 있던 제한을 챗봇에서도 우회 못 하게 동일 적용
     // (DB에도 같은 제한이 RLS로 걸려있어 이중 방어. 여기서 먼저 막는 건 사용자에게 이유를 알려주기 위함)
-    if ((data.action === '입고' || data.action === '출고' || data.action === '창고이동') && profile?.role !== '창고') {
+    if ((data.action === '입고' || data.action === '출고') && profile?.role !== '창고') {
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: '입출고 기록은 창고 담당자만 등록할 수 있습니다.'
@@ -786,11 +783,11 @@ export default function ChatWidget() {
     setInput('')
     setMessages(prev => [...prev, { role: 'user', content: userMessage }])
 
-    // 입출고 기록 시도로 보이는 메시지(수량+개 패턴과 입고/출고/이동 동사가 같이 있음)는
+    // 입출고 기록 시도로 보이는 메시지(수량+개 패턴과 입고/출고 동사가 같이 있음)는
     // 창고 담당자가 아니면 AI 호출 자체를 하지 않고 여기서 바로 차단한다 — 어차피 나중에
     // resolveAction/resolveMultiOutbound에서도 막히지만, GPT 왕복(비용·지연·헷갈릴 여지)을
     // 애초에 안 만드는 게 낫다. (실행 단계의 이중 체크는 안전망으로 그대로 둔다.)
-    const looksLikeTransactionAttempt = /\d+\s*개/.test(userMessage) && /(입고|출고|반출|이동)/.test(userMessage)
+    const looksLikeTransactionAttempt = /\d+\s*개/.test(userMessage) && /(입고|출고|반출)/.test(userMessage)
     if (looksLikeTransactionAttempt && profile?.role !== '창고' && !pendingPartial) {
       setMessages(prev => [...prev, { role: 'assistant', content: '입출고 기록은 창고 담당자만 등록할 수 있습니다.' }])
       return
@@ -856,7 +853,7 @@ export default function ChatWidget() {
           channel: data.channel || detectedChannel?.name || null,
           sub_type: data.sub_type || (detectedChannel ? '판매' : undefined)
         })
-      } else if (data.action === '입고' || data.action === '출고' || data.action === '창고이동') {
+      } else if (data.action === '입고' || data.action === '출고') {
         await resolveAction(data)
       } else if (data.action === '질문' || data.action === '답변') {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }])
@@ -939,10 +936,10 @@ export default function ChatWidget() {
 
       // 비고 메모 생성 (내부사용은 수동 입고 폼과 동일한 패턴으로 인코딩 — 예외리스트 제외 로직은 sub_type만 보지만, 표시는 note로)
       const noteText = pendingAction.sub_type === '내부사용'
-        ? `[내부사용:${pendingAction.internal_use_reason}] 수령자: ${pendingAction.internal_use_recipient} | AI 채팅으로 등록`
+        ? `[내부사용:${pendingAction.internal_use_reason}] 수령자: ${pendingAction.internal_use_recipient}`
         : pendingAction.channel
-        ? `[${pendingAction.channel}] AI 채팅으로 등록`
-        : 'AI 채팅으로 등록'
+        ? `[${pendingAction.channel}]`
+        : null
 
       // 입고용 로트번호: AI가 준 것 또는 오늘 날짜 자동 생성
       const lotNumber = pendingAction.lot_number || (() => {
@@ -953,117 +950,7 @@ export default function ChatWidget() {
         return `${yy}${mm}${dd}-01`
       })()
 
-      // 창고 이동인 경우
-      const isTransfer = pendingAction.action === '창고이동' && pendingAction.to_warehouse
-
-      if (isTransfer) {
-        const toWarehouse = warehouses.find(w =>
-          w.name.includes(pendingAction.to_warehouse || '')
-        )
-
-        if (!toWarehouse) {
-          setMessages(prev => [...prev, { role: 'assistant', content: `"${pendingAction.to_warehouse}" 창고를 찾을 수 없습니다.` }])
-          setPendingAction(null)
-          return
-        }
-
-        // 출발 창고 로트별 재고 조회 (FIFO)
-        const { data: fromLots } = await supabase
-          .from('inventory')
-          .select('id, quantity, lot_number')
-          .eq('product_id', product.id)
-          .eq('warehouse_id', warehouse.id)
-          .gt('quantity', 0)
-          .order('lot_number', { ascending: true })
-
-        const fromTotal = (fromLots || []).reduce((sum, lot) => sum + lot.quantity, 0)
-        if (fromTotal < (pendingAction.quantity || 0)) {
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: `재고 부족!\n\n${warehouse.name} 가용 재고: ${fromTotal.toLocaleString()}개\n요청: ${pendingAction.quantity?.toLocaleString()}개`
-          }])
-          setPendingAction(null)
-          return
-        }
-
-        // 날짜 처리
-        const transactionDate = pendingAction.date
-          ? (pendingAction.date === getTodayISO()
-              ? new Date().toISOString() // 오늘로 지정된 경우 실제 지금 시각 사용 (승인 등 다른 이벤트와의 선후관계가 꼬이지 않게)
-              : new Date(pendingAction.date + 'T09:00:00').toISOString())
-          : new Date().toISOString()
-
-        // 로트별 FIFO 이동
-        let remaining = pendingAction.quantity || 0
-        const movedLots: string[] = []
-
-        for (const lot of (fromLots || [])) {
-          if (remaining <= 0) break
-          const moveQty = Math.min(lot.quantity, remaining)
-          const newFromQty = lot.quantity - moveQty
-
-          // from 창고 차감
-          if (newFromQty <= 0) {
-            await supabase.from('inventory').delete().eq('id', lot.id)
-          } else {
-            await supabase.from('inventory').update({ quantity: newFromQty, updated_at: new Date().toISOString() }).eq('id', lot.id)
-          }
-
-          // to 창고: 동일 로트번호로 upsert
-          const { data: toExisting } = await supabase
-            .from('inventory')
-            .select('id, quantity')
-            .eq('product_id', product.id)
-            .eq('warehouse_id', toWarehouse.id)
-            .eq('lot_number', lot.lot_number)
-            .maybeSingle()
-
-          if (toExisting) {
-            await supabase.from('inventory').update({ quantity: toExisting.quantity + moveQty, updated_at: new Date().toISOString() }).eq('id', toExisting.id)
-          } else {
-            await supabase.from('inventory').insert([{
-              product_id: product.id,
-              warehouse_id: toWarehouse.id,
-              lot_number: lot.lot_number,
-              quantity: moveQty,
-              company_id: profile?.company_id
-            }])
-          }
-
-          movedLots.push(`${lot.lot_number} ${moveQty.toLocaleString()}개`)
-          remaining -= moveQty
-        }
-
-        // 이동 트랜잭션 기록
-        const lotNote = `[로트] ${movedLots.join(' / ')}`
-        await supabase.from('transactions').insert([{
-          product_id: product.id,
-          warehouse_id: warehouse.id,
-          type: '이동',
-          quantity: pendingAction.quantity,
-          channel: null,
-          note: `${warehouse.name} → ${toWarehouse.name} | ${lotNote}`,
-          recorded_by: profile?.name || 'AI',
-          created_at: transactionDate,
-          company_id: profile?.company_id
-        }])
-
-        setMessages(prev => {
-          const next: Message[] = [
-            ...prev,
-            {
-              role: 'assistant',
-              content: `이동 완료!\n${product.product_name} ${pendingAction.quantity?.toLocaleString()}개\n${warehouse.name} → ${toWarehouse.name}\n이동 로트: ${movedLots.join(', ')}`
-            }
-          ]
-          try {
-            sessionStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(next))
-          } catch {
-            /* quota 등 */
-          }
-          return next
-        })
-      } else {
+      {
         // 날짜 처리: 지정된 날짜가 있으면 사용, 없으면 현재 시간
         const transactionDate = pendingAction.date
           ? (pendingAction.date === getTodayISO()
@@ -1215,7 +1102,7 @@ export default function ChatWidget() {
           // 차감 내역을 transaction note에 업데이트
           if (deductions.length > 0) {
             const lotDetail = deductions.map(d => `${d.lot}:-${d.deducted}`).join(', ')
-            const updatedNote = `${noteText} | ${lotDetail}`
+            const updatedNote = [noteText, lotDetail].filter(Boolean).join(' | ')
             await supabase.from('transactions')
               .update({ note: updatedNote })
               .eq('product_id', product.id)
@@ -1365,7 +1252,7 @@ export default function ChatWidget() {
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="입고/출고/이동 요청 입력..."
+                placeholder="입고/출고 요청 입력..."
                 className="flex-1 border rounded-lg px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
                 disabled={loading || !!(pendingAction || pendingMultiAction)}
               />

@@ -8,7 +8,7 @@ import Navbar from '@/app/components/Navbar'
 import { previewFifoDeduction, LotPreviewResult } from '@/lib/lotPreview'
 import { getDocumentCompletionByType, DocumentCompletion } from '@/lib/reconciliation'
 
-type DocType = '발주품의서' | '출고지시서' | '이동품의서'
+type DocType = '발주품의서' | '출고지시서'
 type Status = '대기' | '승인' | '반려'
 
 interface DocItem {
@@ -32,7 +32,6 @@ interface DocumentDetail {
   doc_type: DocType
   status: Status
   warehouse_id: string | null
-  to_warehouse_id: string | null
   channel: string | null
   memo: string | null
   expected_date: string | null
@@ -53,7 +52,6 @@ interface DocumentDetail {
   approved_at: string | null
   created_at: string
   warehouses: { name: string } | null
-  to_warehouse: { name: string } | null
   approval_document_items: DocItem[]
   approval_steps: ApprovalStep[]
 }
@@ -96,12 +94,11 @@ export default function ApprovalDetailPage() {
     const { data } = await supabase
       .from('approval_documents')
       .select(`
-        id, doc_type, status, warehouse_id, to_warehouse_id, channel, memo,
+        id, doc_type, status, warehouse_id, channel, memo,
         expected_date, confirmed_date, confirmation_file_url, channel_order_file_url, supplier_name, supplier_id, supplier_email,
         order_number, po_sent_at, po_sent_to, po_confirmation_review_needed, po_confirmation_review_reason,
         requested_by, requested_by_user_id, approved_by, approved_at, created_at,
         warehouses:warehouse_id (name),
-        to_warehouse:to_warehouse_id (name),
         approval_document_items ( id, product_id, quantity, unit_price, products (product_name, product_code, shelf_life_months) ),
         approval_steps ( id, step_order, status, acted_by_name, acted_at )
       `)
@@ -354,9 +351,7 @@ export default function ApprovalDetailPage() {
   }
 
   const sortedSteps = [...doc.approval_steps].sort((a, b) => a.step_order - b.step_order)
-  const destination = doc.doc_type === '이동품의서'
-    ? `${doc.warehouses?.name || ''} → ${doc.to_warehouse?.name || ''}`
-    : doc.doc_type === '출고지시서'
+  const destination = doc.doc_type === '출고지시서'
     ? `${doc.warehouses?.name || ''}${doc.channel ? ` → ${doc.channel}` : ''}`
     : doc.warehouses?.name || ''
 
@@ -416,21 +411,15 @@ export default function ApprovalDetailPage() {
                     <div className="px-3 py-2">{doc.supplier_name}</div>
                   </>
                 )}
-                <div className="bg-gray-50 px-3 py-2 font-medium text-gray-500">
-                  {doc.doc_type === '이동품의서' ? '이동 경로' : '납품/출고 장소'}
-                </div>
+                <div className="bg-gray-50 px-3 py-2 font-medium text-gray-500">납품/출고 장소</div>
                 <div className="px-3 py-2">{destination}</div>
 
-                {doc.doc_type !== '이동품의서' && (
-                  <>
-                    <div className="bg-gray-50 px-3 py-2 font-medium text-gray-500">희망일(요청)</div>
-                    <div className="px-3 py-2">{doc.expected_date || '-'}</div>
-                    <div className="bg-gray-50 px-3 py-2 font-medium text-gray-500">확정일</div>
-                    <div className="px-3 py-2">
-                      {doc.confirmed_date || <span className="text-orange-500">미확정</span>}
-                    </div>
-                  </>
-                )}
+                <div className="bg-gray-50 px-3 py-2 font-medium text-gray-500">희망일(요청)</div>
+                <div className="px-3 py-2">{doc.expected_date || '-'}</div>
+                <div className="bg-gray-50 px-3 py-2 font-medium text-gray-500">확정일</div>
+                <div className="px-3 py-2">
+                  {doc.confirmed_date || <span className="text-orange-500">미확정</span>}
+                </div>
               </div>
 
               {/* 결재란 */}
@@ -568,7 +557,7 @@ export default function ApprovalDetailPage() {
                       )}
                     </div>
 
-                    {doc.status === '승인' && doc.doc_type !== '이동품의서' && (
+                    {doc.status === '승인' && (
                       <div>
                         <p className="text-xs text-gray-500 mb-1">
                           {doc.doc_type === '발주품의서' ? '거래명세서 (실물 입고 건별)' : '운송장 (실물 출고 건별)'}
@@ -603,7 +592,7 @@ export default function ApprovalDetailPage() {
               </div>
 
               {/* 납기 확정: 발주품의서 전용 — 거래처가 회신해준 날짜를 옮겨 적는 일이라 승인권자로 제한할 이유가 없음.
-                  출고지시서는 회사가 정한 마감규칙으로 기안 시점에 자동 계산되고, 이동품의서는 확정 개념이 없음. */}
+                  출고지시서는 회사가 정한 마감규칙으로 기안 시점에 자동 계산됨. */}
               {doc.doc_type === '발주품의서' && (
                 <div className="border-t pt-4">
                   {!showConfirmForm ? (

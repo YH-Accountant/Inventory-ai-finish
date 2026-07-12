@@ -43,7 +43,7 @@ export default function Navbar() {
   return (
     <nav className="bg-blue-900 text-white fixed top-0 left-0 right-0 z-40 shadow-md">
       {/* 상단 행: 로고 + 메뉴(데스크탑) + 프로필 */}
-      <div className="h-14 flex items-center px-4 md:px-6 gap-4 md:gap-8">
+      <div className="h-14 flex items-center px-3 md:px-6 gap-2 md:gap-8">
         {/* 로고 */}
         <Link href="/" className="font-bold text-base flex items-center gap-2 shrink-0 hover:text-blue-200 transition">
           <span className="text-lg">📦</span>
@@ -120,7 +120,7 @@ export default function Navbar() {
             <div className="w-7 h-7 bg-blue-600 rounded-full flex items-center justify-center text-xs font-bold">
               {initial}
             </div>
-            <span className="hidden sm:inline text-sm font-medium">{profile?.name}</span>
+            <span className="text-sm font-medium max-w-[64px] sm:max-w-none truncate">{profile?.name}</span>
             <span className={`hidden sm:inline text-xs px-1.5 py-0.5 rounded-full font-medium ${
               profile?.role === '본사' ? 'bg-blue-700 text-blue-200' : 'bg-emerald-700 text-emerald-200'
             }`}>

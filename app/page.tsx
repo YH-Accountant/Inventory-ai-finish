@@ -8,7 +8,6 @@ import Navbar from '@/app/components/Navbar'
 import {
   getInboundReconciliation,
   getOutboundReconciliation,
-  getTransferReconciliation,
   getInboundEvidenceExceptions,
   getOutboundEvidenceExceptions,
   classifyMissing
@@ -172,11 +171,10 @@ export default function Home() {
 
   // 대시보드 진입 시마다 "조치 필요" 배너용 카운트 계산 (기한초과 미기록/미달 + 증빙 미첨부/불일치)
   async function loadActionAlerts(companyId: string) {
-    const [{ data: companyData }, inbound, outbound, transfer, inboundEvidence, outboundEvidence] = await Promise.all([
+    const [{ data: companyData }, inbound, outbound, inboundEvidence, outboundEvidence] = await Promise.all([
       supabase.from('companies').select('reconciliation_grace_days, outbound_grace_days, monthly_report_confirmed_at').eq('id', companyId).single(),
       getInboundReconciliation(companyId),
       getOutboundReconciliation(companyId),
-      getTransferReconciliation(companyId),
       getInboundEvidenceExceptions(companyId),
       getOutboundEvidenceExceptions(companyId)
     ])
@@ -186,12 +184,11 @@ export default function Home() {
     }
     const allMissing = [
       ...inbound.progress.map(p => ({ ...p, source: '입고' as const })),
-      ...outbound.progress.map(p => ({ ...p, source: '출고' as const })),
-      ...transfer.progress.map(p => ({ ...p, source: '이동' as const }))
+      ...outbound.progress.map(p => ({ ...p, source: '출고' as const }))
     ].filter(p => p.remaining_qty > 0)
     const overdueCount = allMissing.filter(m => classifyMissing(m, graceBySource) === 'overdue').length
     const evidenceCount = inboundEvidence.length + outboundEvidence.exceptions.length
-    const unmatchedCount = inbound.unmatched.length + outbound.unmatched.length + transfer.unmatched.length
+    const unmatchedCount = inbound.unmatched.length + outbound.unmatched.length
     setActionAlerts({ overdueCount, evidenceCount, unmatchedCount })
     setMonthlyReportConfirmedAt(companyData?.monthly_report_confirmed_at ?? null)
   }
@@ -306,8 +303,10 @@ export default function Home() {
       stockByProduct[k].qty += item.quantity
     })
 
+    // 소진 속도는 "판매"로 나간 수량만 반영한다 — 내부사용/폐기는 반복적인 수요가 아니라
+    // 일회성 반출이라, 여기 섞이면 실제 판매 속도보다 소진이 빠른 것처럼 왜곡된다.
     const [{ data: allTx }] = await Promise.all([
-      supabase.from('transactions').select('type, quantity, products(product_name)').eq('company_id', cid).eq('type', '출고').gte('created_at', thirtyDaysAgo.toISOString())
+      supabase.from('transactions').select('type, sub_type, quantity, products(product_name)').eq('company_id', cid).eq('type', '출고').eq('sub_type', '판매').gte('created_at', thirtyDaysAgo.toISOString())
     ])
     const outboundByProduct: Record<string, number> = {}
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

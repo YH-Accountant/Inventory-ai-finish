@@ -240,13 +240,13 @@ export default function SettingsPage() {
 
           <hr />
 
-          {/* 미기록 유예일수(α) - 입고/이동 */}
+          {/* 미기록 유예일수(α) - 입고 */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              미기록 유예일수 — 입고/이동 (α)
+              미기록 유예일수 — 입고 (α)
             </label>
             <p className="text-xs text-gray-400 mb-2">
-              발주품의서/이동품의서의 납기·이동예정일로부터 며칠 지나야 미기록으로 적발할지 설정합니다 (거래처 등 외부 변수로 며칠 밀릴 수 있어 유예를 둡니다)
+              발주품의서의 납기 확정일로부터 며칠 지나야 미기록으로 적발할지 설정합니다 (거래처 등 외부 변수로 며칠 밀릴 수 있어 유예를 둡니다)
             </p>
             <input
               type="number"
