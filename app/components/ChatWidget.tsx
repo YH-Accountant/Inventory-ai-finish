@@ -82,6 +82,33 @@ function resolveRegisteredChannel(
   return { name: null, unmatched: true }
 }
 
+// GPT가 다품목 요청(예: "쿠션100+립밤100 출고")을 프롬프트 지침대로 items 배열로 안정적으로
+// 반환하지 못하는 경우가 있어(모델이 지침을 놓치고 첫 품목만 단일 action으로 반환), 원문을
+// "키워드+수량+개" 패턴으로 직접 스캔해서 프론트에서 다품목 여부를 다시 한번 확정 판단한다.
+// 사용자는 보통 "모이스처립밤"이 아니라 "립밤"처럼 줄여 말하므로, 원문에 등록된 제품명이
+// 그대로 등장하는지가 아니라 반대로(추출한 키워드를 제품명이 포함하는지) 비교해야 매칭된다 —
+// 채팅 다른 곳(resolveAction 등)의 제품 매칭 방향과 동일하게 맞춘 것.
+function detectMultiItemsFromText(
+  text: string,
+  products: { product_name: string; product_code: string }[]
+): { product_name: string; quantity: number }[] {
+  const found: { product_name: string; quantity: number; index: number }[] = []
+  const pattern = /([가-힣A-Za-z]+)\s*(\d+)\s*개/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    const keyword = match[1]
+    const quantity = parseInt(match[2], 10)
+    const product = products.find(p =>
+      p.product_name.includes(keyword) || p.product_code.toUpperCase().includes(keyword.toUpperCase())
+    )
+    if (product) found.push({ product_name: product.product_name, quantity, index: match.index })
+  }
+  // 같은 제품이 중복 감지되면 마지막 언급만 남긴다
+  const dedup = new Map<string, { product_name: string; quantity: number; index: number }>()
+  found.forEach(f => dedup.set(f.product_name, f))
+  return Array.from(dedup.values()).sort((a, b) => a.index - b.index).map(({ product_name, quantity }) => ({ product_name, quantity }))
+}
+
 function isPersistedMessageList(v: unknown): v is Message[] {
   if (!Array.isArray(v) || v.length === 0) return false
   return v.every(
@@ -726,8 +753,18 @@ export default function ChatWidget() {
         return
       }
 
+      // GPT가 items 배열을 놓치고 단일 품목 action(또는 헷갈려서 질문)으로 반환하는 경우가 있어,
+      // "출고" 키워드가 있고 원문에 등록된 제품이 실제로 2개 이상 + 수량과 함께 등장하면
+      // GPT의 판단과 무관하게 프론트에서 다품목으로 확정 처리한다(안전망 — 지침 준수에만 의존 안 함).
+      const isOutboundIntent = userMessage.includes('출고') && (data.action === '출고' || data.action === '질문')
+      const detectedItems = isOutboundIntent && !Array.isArray(data.items)
+        ? detectMultiItemsFromText(userMessage, products)
+        : []
+
       if (data.action === '출고' && Array.isArray(data.items) && data.items.length > 0) {
         await resolveMultiOutbound(data)
+      } else if (detectedItems.length > 1) {
+        await resolveMultiOutbound({ ...data, action: '출고', items: detectedItems })
       } else if (data.action === '입고' || data.action === '출고' || data.action === '창고이동') {
         await resolveAction(data)
       } else if (data.action === '질문' || data.action === '답변') {

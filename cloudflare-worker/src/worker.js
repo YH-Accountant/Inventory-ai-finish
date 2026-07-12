@@ -27,6 +27,13 @@ export default {
           : null
       }
 
+      console.log('발주확인서 웹훅 요청:', JSON.stringify({
+        order_number: payload.order_number,
+        has_attachment: !!attachment,
+        attachment_type: attachment?.mimeType || null,
+        attachment_size: attachment?.content?.byteLength || 0
+      }))
+
       const res = await fetch(env.WEBHOOK_URL, {
         method: 'POST',
         headers: {
@@ -36,9 +43,8 @@ export default {
         body: JSON.stringify(payload)
       })
 
-      if (!res.ok) {
-        console.error('웹훅 처리 실패:', res.status, await res.text())
-      }
+      // 디버깅을 위해 성공/실패 관계없이 항상 응답 내용을 로그로 남긴다 (검증 통과/보류 여부 확인용)
+      console.log('발주확인서 웹훅 응답:', res.status, await res.text())
     } catch (err) {
       console.error('발주확인서 이메일 파싱 실패:', err)
     }

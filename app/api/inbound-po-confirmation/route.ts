@@ -103,13 +103,20 @@ export async function POST(request: Request) {
 
   let filePath: string | null = null
   let heldReason: string | null = null
+  // 디버깅용 — 검증이 어느 단계에서 왜 통과/보류됐는지 Worker 로그(응답 body)로 바로 보기 위함.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const debug: Record<string, any> = {}
 
   if (attachment?.contentBase64) {
     const buffer = Buffer.from(attachment.contentBase64, 'base64')
     const isPdf = attachment.contentType === 'application/pdf' || attachment.filename.toLowerCase().endsWith('.pdf')
+    debug.isPdf = isPdf
 
     if (isPdf) {
       const pdfText = await extractPdfText(buffer)
+      debug.textExtracted = !!pdfText
+      debug.textLength = pdfText?.length ?? 0
+      debug.textPreview = pdfText ? pdfText.slice(0, 200) : null
       if (pdfText) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const items = ((doc.approval_document_items || []) as any[]).map(i => ({
@@ -117,7 +124,9 @@ export async function POST(request: Request) {
           product_code: i.products?.product_code || '',
           quantity: i.quantity
         }))
+        debug.items = items
         const { verified, reason } = verifyAttachmentContent(pdfText, order_number, items)
+        debug.verified = verified
         if (!verified) heldReason = reason
       }
       // 텍스트 추출 자체가 안 되면(스캔본 등) 검증 불가 — 그냥 통과시킨다.
@@ -174,6 +183,7 @@ export async function POST(request: Request) {
     confirmed_date: confirmedDate,
     file: filePath,
     held: !!heldReason,
-    held_reason: heldReason
+    held_reason: heldReason,
+    debug
   })
 }
