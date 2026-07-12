@@ -16,16 +16,17 @@ function extractConfirmedDate(text: string): string | null {
 }
 
 // PDF(텍스트 기반)에서 본문 텍스트 추출. 스캔본 등 텍스트가 없으면 null.
-async function extractPdfText(buffer: Buffer): Promise<string | null> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function extractPdfText(buffer: Buffer): Promise<{ text: string | null; error: string | null }> {
   try {
     const { PDFParse } = await import('pdf-parse')
     const parser = new PDFParse({ data: buffer })
     const result = await parser.getText()
     await parser.destroy()
     const text = (result.text || '').trim()
-    return text.length > 0 ? text : null
-  } catch {
-    return null
+    return { text: text.length > 0 ? text : null, error: null }
+  } catch (err) {
+    return { text: null, error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }
   }
 }
 
@@ -113,10 +114,11 @@ export async function POST(request: Request) {
     debug.isPdf = isPdf
 
     if (isPdf) {
-      const pdfText = await extractPdfText(buffer)
+      const { text: pdfText, error: extractError } = await extractPdfText(buffer)
       debug.textExtracted = !!pdfText
       debug.textLength = pdfText?.length ?? 0
       debug.textPreview = pdfText ? pdfText.slice(0, 200) : null
+      debug.extractError = extractError
       if (pdfText) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const items = ((doc.approval_document_items || []) as any[]).map(i => ({
