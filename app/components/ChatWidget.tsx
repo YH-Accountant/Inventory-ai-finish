@@ -714,6 +714,17 @@ export default function ChatWidget() {
 
     setInput('')
     setMessages(prev => [...prev, { role: 'user', content: userMessage }])
+
+    // 입출고 기록 시도로 보이는 메시지(수량+개 패턴과 입고/출고/이동 동사가 같이 있음)는
+    // 창고 담당자가 아니면 AI 호출 자체를 하지 않고 여기서 바로 차단한다 — 어차피 나중에
+    // resolveAction/resolveMultiOutbound에서도 막히지만, GPT 왕복(비용·지연·헷갈릴 여지)을
+    // 애초에 안 만드는 게 낫다. (실행 단계의 이중 체크는 안전망으로 그대로 둔다.)
+    const looksLikeTransactionAttempt = /\d+\s*개/.test(userMessage) && /(입고|출고|반출|이동)/.test(userMessage)
+    if (looksLikeTransactionAttempt && profile?.role !== '창고' && !pendingPartial) {
+      setMessages(prev => [...prev, { role: 'assistant', content: '입출고 기록은 창고 담당자만 등록할 수 있습니다.' }])
+      return
+    }
+
     setLoading(true)
 
     try {
