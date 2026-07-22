@@ -342,9 +342,7 @@ export default function ExceptionsPage() {
                         <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 mr-2">{m.source}</span>
                         <span className="font-medium text-sm">{m.product_name}</span>
                         <span className="text-xs text-gray-500 ml-2">{m.display_location}</span>
-                        {m.escalated_at ? (
-                          <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded ml-2">에스컬레이션됨</span>
-                        ) : m.stage1_alert_sent_at ? (
+                        {!m.escalated_at && m.stage1_alert_sent_at ? (
                           <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded ml-2">1차 알림중</span>
                         ) : null}
                       </div>
