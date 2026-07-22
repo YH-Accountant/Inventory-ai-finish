@@ -64,6 +64,8 @@ export default function ExceptionsPage() {
   const [attachShippingType, setAttachShippingType] = useState<typeof SHIPPING_TYPES[number] | ''>('')
   const [attaching, setAttaching] = useState(false)
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
+  // "확정 대기 N건" 회색 문구를 눌러 어떤 건인지 같은 작은 글씨로 접었다 폈다 (별도 행 노출은 안 함)
+  const [showAwaiting, setShowAwaiting] = useState(false)
 
   // 출고 건 일괄 증빙 첨부 — 한 번의 집화(운송)로 여러 품목이 같이 나가면 증빙 파일도 하나뿐인데,
   // 건별로 따로 첨부해야 했던 문제를 해결. 선택된 각 건은 자기 실물기록 수량을 그대로 증빙수량으로 씀
@@ -355,11 +357,32 @@ export default function ExceptionsPage() {
                 </div>
               )}
               {(pendingMissing.length > 0 || awaitingConfirmation.length > 0) && (
-                <p className="text-xs text-gray-400 mt-4">
-                  {pendingMissing.length > 0 && `진행중(확정 기한 내) ${pendingMissing.length}건`}
-                  {pendingMissing.length > 0 && awaitingConfirmation.length > 0 && ' · '}
-                  {awaitingConfirmation.length > 0 && `확정 대기 ${awaitingConfirmation.length}건 — 거래처 납기 확정 전이라 예외 아님`}
-                </p>
+                <div className="text-xs text-gray-400 mt-4">
+                  <p>
+                    {pendingMissing.length > 0 && `진행중(확정 기한 내) ${pendingMissing.length}건`}
+                    {pendingMissing.length > 0 && awaitingConfirmation.length > 0 && ' · '}
+                    {awaitingConfirmation.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAwaiting(v => !v)}
+                        className="text-gray-400 hover:text-gray-600 hover:underline"
+                      >
+                        확정 대기 {awaitingConfirmation.length}건 — 거래처 납기 확정 전이라 예외 아님
+                        <span className="ml-1">{showAwaiting ? '▾' : '▸'}</span>
+                      </button>
+                    )}
+                  </p>
+                  {showAwaiting && awaitingConfirmation.length > 0 && (
+                    <div className="mt-1.5 pl-2 space-y-0.5">
+                      {awaitingConfirmation.map((m, i) => (
+                        <div key={`awaiting-${m.document_id}-${m.product_id}-${i}`}>
+                          · <span className="text-gray-500">[{m.source}]</span> {m.product_name}
+                          {m.display_location ? ` · ${m.display_location}` : ''} · {m.approved_qty.toLocaleString()}개
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
