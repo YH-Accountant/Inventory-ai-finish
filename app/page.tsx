@@ -633,7 +633,7 @@ export default function Home() {
 
             {/* 재고 현황 */}
             <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-gray-100">
-              <div className="p-3 md:p-5 border-b border-gray-100 flex items-center gap-2">
+              <div className="p-3 md:p-5 border-b border-gray-100 flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-semibold text-gray-900 shrink-0">재고 현황</h2>
                 <input
                   type="text"
@@ -642,7 +642,7 @@ export default function Home() {
                   onChange={e => setInventorySearch(e.target.value)}
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-slate-50"
                 />
-                <div className="flex gap-1 bg-slate-100 rounded-lg p-1 shrink-0">
+                <div className="flex flex-wrap gap-1 bg-slate-100 rounded-lg p-1">
                   <button
                     onClick={() => setSelectedWarehouse('전체')}
                     className={`px-3 py-1 rounded-md text-xs font-medium transition ${selectedWarehouse === '전체' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}

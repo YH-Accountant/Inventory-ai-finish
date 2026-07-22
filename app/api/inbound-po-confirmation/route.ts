@@ -77,12 +77,21 @@ function verifyAttachmentContent(
     return { verified: false, reason: `이메일 제목(${expectedOrderNumber})과 첨부파일 안 발주번호(${poMatch[0]})가 다릅니다.` }
   }
 
+  // 폴백(발주번호가 문서에 없을 때): 품목 식별자와 수량이 "같은 줄"에 함께 있어야 그 품목 건으로 인정한다.
+  // 전체 텍스트를 한 덩어리로 보고 .includes()로만 확인하면, 코드 A(30개)가 있는 문서에 다른 줄에서
+  // 우연히 "50"이 등장할 때 A를 50개짜리로 오인식할 수 있다. 줄 단위로 검사해 그 오탐을 막는다.
+  // (한 줄 안에서는 표 셀 경계의 공백 끊김을 흡수하기 위해 기존과 동일하게 공백만 제거한다.)
+  const normalizedLines = text.split('\n').map(normalizeForMatch)
   const matched = items.some(i => {
-    const qtyFound = normalizedText.includes(String(i.quantity))
-    if (!qtyFound) return false
-    const codeFound = !!i.product_code && normalizedText.includes(normalizeForMatch(i.product_code))
-    const nameFound = !!i.product_name && normalizedText.includes(normalizeForMatch(i.product_name))
-    return codeFound || nameFound
+    const qty = String(i.quantity)
+    const code = normalizeForMatch(i.product_code)
+    const name = normalizeForMatch(i.product_name)
+    return normalizedLines.some(line => {
+      if (!line.includes(qty)) return false
+      const codeFound = !!code && line.includes(code)
+      const nameFound = !!name && line.includes(name)
+      return codeFound || nameFound
+    })
   })
   if (matched) return { verified: true, reason: null }
 
