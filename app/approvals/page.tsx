@@ -352,6 +352,12 @@ export default function ApprovalsPage() {
     return `${y}-${mo}-${d}`
   }
 
+  // 오늘(로컬) 날짜 문자열. 기안 시점(작성일=오늘)보다 과거로 희망 납기일이 잡히는 걸 막는 데 쓴다.
+  function todayLocalStr(): string {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
 
@@ -366,6 +372,11 @@ export default function ApprovalsPage() {
     }
     if (formData.doc_type === '발주품의서' && !formData.expected_date) {
       alert('희망 납기일을 입력해주세요.')
+      return
+    }
+    // 오늘 기안하는 문서의 희망 납기일이 작성일(오늘)보다 과거일 수는 없다 (시간 역행 방지).
+    if (formData.doc_type === '발주품의서' && formData.expected_date < todayLocalStr()) {
+      alert('희망 납기일은 오늘 이후 날짜로 선택해주세요. (작성일보다 과거일 수 없습니다)')
       return
     }
     // 출고지시서: 자사몰은 마감시간 기준 자동계산이라 별도 입력 불필요, 그 외(올리브영 등)는
@@ -632,6 +643,7 @@ export default function ApprovalsPage() {
                       <input
                         type="date"
                         required
+                        min={todayLocalStr()}
                         value={formData.expected_date}
                         onChange={(e) => setFormData({ ...formData, expected_date: e.target.value })}
                         className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
