@@ -271,6 +271,7 @@ export interface MatchedEvidenceTransaction {
   evidence_file_url: string | null
   evidence_quantity: number | null
   shipping_type: string | null
+  evidence_recorded_by: string | null
   created_at: string
 }
 
@@ -299,7 +300,7 @@ export async function getDocumentCompletionByType(
 
   const { data: txs } = await client
     .from('transactions')
-    .select('id, product_id, warehouse_id, channel, quantity, note, evidence_file_url, evidence_quantity, shipping_type, evidence_review_needed, created_at')
+    .select('id, product_id, warehouse_id, channel, quantity, note, evidence_file_url, evidence_quantity, shipping_type, evidence_review_needed, evidence_recorded_by, created_at')
     .eq('company_id', companyId)
     .eq('type', txType)
 
@@ -325,6 +326,7 @@ export async function getDocumentCompletionByType(
       evidence_quantity: t.evidence_quantity ?? null,
       shipping_type: t.shipping_type ?? null,
       evidence_review_needed: t.evidence_review_needed ?? false,
+      evidence_recorded_by: t.evidence_recorded_by ?? null,
       created_at: t.created_at
     }
     if (!txsByKey[key]) txsByKey[key] = []
@@ -358,8 +360,8 @@ export async function getDocumentCompletionByType(
     const matchedTransactions: MatchedEvidenceTransaction[] = Array.from(claimedIds)
       .map(id => txById[id])
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-      .map(({ id, quantity, evidence_file_url, evidence_quantity, shipping_type, created_at }) => (
-        { id, quantity, evidence_file_url, evidence_quantity, shipping_type, created_at }
+      .map(({ id, quantity, evidence_file_url, evidence_quantity, shipping_type, evidence_recorded_by, created_at }) => (
+        { id, quantity, evidence_file_url, evidence_quantity, shipping_type, evidence_recorded_by, created_at }
       ))
 
     const evidenceOk = matchedTransactions.every(t => {
