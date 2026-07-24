@@ -65,13 +65,19 @@ function normalizeForMatch(s: string): string {
   return s.replace(/\s+/g, '')
 }
 
+// 법인 표기 차이 흡수: "(주)아뛰드" == "주식회사 아뛰드" == "㈜아뛰드" -> 핵심 상호("아뛰드")로 대조
+function stripCorpPrefix(s: string): string {
+  return s.replace(/주식회사|유한회사|유한책임회사|㈜|㈜|\(주\)|\(유\)/g, '')
+}
+
 interface Item { product_name: string; product_code: string; quantity: number }
 type Verdict = { verified: boolean; reason: string | null }
 
 // 출고: 집하확인서 — 발송자(회사명) + 운송장번호 형식 + 총수량(대상 출고건 합)
 function verifyOutbound(text: string, companyName: string, items: Item[]): Verdict {
-  const norm = normalizeForMatch(text)
-  if (companyName && !norm.includes(normalizeForMatch(companyName))) {
+  const norm = normalizeForMatch(stripCorpPrefix(text))
+  const core = normalizeForMatch(stripCorpPrefix(companyName))
+  if (core && !norm.includes(core)) {
     return { verified: false, reason: `발송자(${companyName})가 서류에서 확인되지 않습니다.` }
   }
   // 운송장번호: 하이픈 포함 번호(예 682-4471-9906) 또는 8자리 이상 숫자열
