@@ -45,6 +45,14 @@ interface CompletedEvidenceRow {
 
 const SHIPPING_TYPES = ['택배/화물', '자차배송', '직접픽업'] as const
 
+// 자동검증 서버로 파일을 보내기 위해 base64로 변환
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary)
+}
+
 export default function ExceptionsPage() {
   const { profile } = useAuth()
   const [missing, setMissing] = useState<LabeledMissing[]>([])
@@ -66,6 +74,8 @@ export default function ExceptionsPage() {
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
   // "확정 대기 N건" 회색 문구를 눌러 어떤 건인지 같은 작은 글씨로 접었다 폈다 (별도 행 노출은 안 함)
   const [showAwaiting, setShowAwaiting] = useState(false)
+  // 외부증빙 자동검증에서 발송자(회사명) 대조에 사용
+  const [companyName, setCompanyName] = useState('')
 
   // 출고 건 일괄 증빙 첨부 — 한 번의 집하(운송)로 여러 품목이 같이 나가면 증빙 파일도 하나뿐인데,
   // 건별로 따로 첨부해야 했던 문제를 해결. 선택된 각 건은 자기 실물기록 수량을 그대로 증빙수량으로 씀
@@ -84,7 +94,7 @@ export default function ExceptionsPage() {
   async function load(companyId: string) {
     setLoading(true)
     const [{ data: companyData }, inbound, outbound, inboundEvidence, outboundEvidence, { data: completedTx }, { data: confirmedInternalUse }] = await Promise.all([
-      supabase.from('companies').select('reconciliation_grace_days, outbound_grace_days').eq('id', companyId).single(),
+      supabase.from('companies').select('reconciliation_grace_days, outbound_grace_days, name').eq('id', companyId).single(),
       getInboundReconciliation(companyId),
       getOutboundReconciliation(companyId),
       getInboundEvidenceExceptions(companyId),
@@ -95,6 +105,7 @@ export default function ExceptionsPage() {
         .eq('company_id', companyId)
         .in('type', ['입고', '출고'])
         .not('evidence_file_url', 'is', null)
+        .eq('evidence_review_needed', false)
         .order('created_at', { ascending: false }),
       // 내부사용(샘플)은 파일 증빙이 없는 대신 수령확인이 그 역할을 하므로, 확인된 건은 여기서
       // 완료로 같이 보여준다 (미확인 건은 대시보드 수령확인 배너 + 주간요약으로만 관리, 여기 안 뜸).
@@ -111,6 +122,7 @@ export default function ExceptionsPage() {
     const outboundGrace = companyData?.outbound_grace_days ?? 0
     setGraceDays(grace)
     setOutboundGraceDays(outboundGrace)
+    setCompanyName(companyData?.name || '')
     const graceBySource = { default: grace, outbound: outboundGrace }
 
     const allMissing: LabeledMissing[] = [
@@ -170,6 +182,29 @@ export default function ExceptionsPage() {
     setAttachShippingType('')
   }
 
+  // 외부증빙 자동검증 호출. 통과 못 하거나 에러면 안전하게 '검토 필요'로 본다(완료 자동승격 금지).
+  async function runEvidenceVerify(
+    source: '입고' | '출고',
+    items: { product_name: string; product_code: string; quantity: number }[],
+    file: File
+  ): Promise<{ verified: boolean; reason: string | null }> {
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token
+      const res = await fetch('/api/verify-evidence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          source, companyName, items,
+          file: { contentBase64: await fileToBase64(file), contentType: file.type, filename: file.name }
+        })
+      })
+      const data = await res.json()
+      return { verified: !!data.verified, reason: data.verified ? null : (data.reason || '자동검증 실패') }
+    } catch {
+      return { verified: false, reason: '자동검증을 수행하지 못했습니다. (검토 필요)' }
+    }
+  }
+
   async function handleAttachSubmit(row: LabeledEvidence) {
     if (!profile?.company_id) return
 
@@ -201,9 +236,17 @@ export default function ExceptionsPage() {
         return
       }
 
+      // 파일 내용 자동검증 → 통과 못 하면 검토 플래그로 남겨 완료로 승격되지 않게 한다
+      const verify = await runEvidenceVerify(
+        row.source,
+        [{ product_name: row.product_name, product_code: '', quantity: row.quantity }],
+        attachFile
+      )
       const updatePayload: Record<string, unknown> = {
         evidence_file_url: path,
-        evidence_quantity: Number(attachQty)
+        evidence_quantity: Number(attachQty),
+        evidence_review_needed: !verify.verified,
+        evidence_review_reason: verify.verified ? null : verify.reason
       }
       if (row.source === '출고') updatePayload.shipping_type = '택배/화물'
 
@@ -267,11 +310,19 @@ export default function ExceptionsPage() {
 
       // 선택된 건 각각, 자기 실물기록 수량 그대로를 증빙수량으로 저장 (같은 집하 건이므로 파일만 공유)
       const targets = evidenceExceptions.filter(e => selectedOutboundIds.has(e.transaction_id))
+      // 집하확인서 자동검증: 발송자·운송장번호·총수량(선택건 합) 대조 → 실패 시 전 건 검토 플래그
+      const verify = await runEvidenceVerify(
+        '출고',
+        targets.map(t => ({ product_name: t.product_name, product_code: '', quantity: t.quantity })),
+        batchFile
+      )
       const results = await Promise.all(targets.map(t =>
         supabase.from('transactions').update({
           evidence_file_url: path,
           evidence_quantity: t.quantity,
-          shipping_type: '택배/화물'
+          shipping_type: '택배/화물',
+          evidence_review_needed: !verify.verified,
+          evidence_review_reason: verify.verified ? null : verify.reason
         }).eq('id', t.transaction_id)
       ))
       const failed = results.find(r => r.error)
@@ -502,8 +553,8 @@ export default function ExceptionsPage() {
                         <div className="flex items-center gap-3">
                           <div className="text-right text-sm">
                             <span className="text-purple-600 font-semibold">{e.quantity.toLocaleString()}개</span>
-                            <span className="text-gray-400 text-xs ml-1">
-                              ({e.reason}{e.reason === '증빙수량 불일치' ? ` · 증빙상 ${e.evidence_quantity?.toLocaleString()}개` : ''})
+                            <span className={`text-xs ml-1 ${e.reason === '검토 필요' ? 'text-red-600 font-medium' : 'text-gray-400'}`}>
+                              ({e.reason}{e.reason === '증빙수량 불일치' ? ` · 증빙상 ${e.evidence_quantity?.toLocaleString()}개` : ''}{e.reason === '검토 필요' && e.detail ? ` · ${e.detail}` : ''})
                             </span>
                           </div>
                           {e.evidence_file_url && (

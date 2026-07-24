@@ -197,7 +197,8 @@ export interface EvidenceExceptionRow {
   evidence_quantity: number | null
   evidence_file_url: string | null
   created_at: string
-  reason: '증빙 미첨부' | '증빙수량 불일치' | '증빙 미입력'
+  reason: '증빙 미첨부' | '증빙수량 불일치' | '증빙 미입력' | '검토 필요'
+  detail?: string | null
 }
 
 export interface NonTransportRow {
@@ -214,7 +215,7 @@ export async function getInboundEvidenceExceptions(
 ): Promise<EvidenceExceptionRow[]> {
   const { data: txs } = await client
     .from('transactions')
-    .select('id, quantity, evidence_file_url, evidence_quantity, created_at, products(product_name), warehouses(name)')
+    .select('id, quantity, evidence_file_url, evidence_quantity, evidence_review_needed, evidence_review_reason, created_at, products(product_name), warehouses(name)')
     .eq('company_id', companyId)
     .eq('type', '입고')
 
@@ -230,6 +231,18 @@ export async function getInboundEvidenceExceptions(
         evidence_file_url: null,
         created_at: t.created_at,
         reason: '증빙 미첨부'
+      })
+    } else if (t.evidence_review_needed) {
+      exceptions.push({
+        transaction_id: t.id,
+        product_name: t.products?.product_name || '',
+        warehouse_name: t.warehouses?.name || null,
+        quantity: t.quantity,
+        evidence_quantity: t.evidence_quantity,
+        evidence_file_url: t.evidence_file_url,
+        created_at: t.created_at,
+        reason: '검토 필요',
+        detail: t.evidence_review_reason || null
       })
     } else if (t.evidence_quantity !== t.quantity) {
       exceptions.push({
@@ -286,7 +299,7 @@ export async function getDocumentCompletionByType(
 
   const { data: txs } = await client
     .from('transactions')
-    .select('id, product_id, warehouse_id, channel, quantity, note, evidence_file_url, evidence_quantity, shipping_type, created_at')
+    .select('id, product_id, warehouse_id, channel, quantity, note, evidence_file_url, evidence_quantity, shipping_type, evidence_review_needed, created_at')
     .eq('company_id', companyId)
     .eq('type', txType)
 
@@ -299,7 +312,7 @@ export async function getDocumentCompletionByType(
     return `${tx.channel || ''}`
   }
 
-  interface TxEntry extends MatchedEvidenceTransaction { remaining: number }
+  interface TxEntry extends MatchedEvidenceTransaction { remaining: number; evidence_review_needed: boolean }
   const txsByKey: Record<string, TxEntry[]> = {}
   const txById: Record<string, TxEntry> = {}
   ;(txs || []).forEach((t: AnyRow) => {
@@ -311,6 +324,7 @@ export async function getDocumentCompletionByType(
       evidence_file_url: t.evidence_file_url ?? null,
       evidence_quantity: t.evidence_quantity ?? null,
       shipping_type: t.shipping_type ?? null,
+      evidence_review_needed: t.evidence_review_needed ?? false,
       created_at: t.created_at
     }
     if (!txsByKey[key]) txsByKey[key] = []
@@ -350,7 +364,8 @@ export async function getDocumentCompletionByType(
 
     const evidenceOk = matchedTransactions.every(t => {
       if (docType === '출고지시서' && (t.shipping_type === '자차배송' || t.shipping_type === '직접픽업')) return true
-      return !!t.evidence_file_url && t.evidence_quantity === t.quantity
+      // 자동검증 실패로 검토 대기중(evidence_review_needed)인 건은 완료로 인정하지 않는다.
+      return !!t.evidence_file_url && t.evidence_quantity === t.quantity && !txById[t.id]?.evidence_review_needed
     })
 
     result[doc.id] = { isComplete: fullyReceived && evidenceOk, matchedTransactions }
@@ -365,7 +380,7 @@ export async function getOutboundEvidenceExceptions(
 ): Promise<{ exceptions: EvidenceExceptionRow[]; nonTransport: NonTransportRow[] }> {
   const { data: txs } = await client
     .from('transactions')
-    .select('id, quantity, evidence_file_url, evidence_quantity, shipping_type, sub_type, created_at, products(product_name), warehouses(name)')
+    .select('id, quantity, evidence_file_url, evidence_quantity, shipping_type, sub_type, evidence_review_needed, evidence_review_reason, created_at, products(product_name), warehouses(name)')
     .eq('company_id', companyId)
     .eq('type', '출고')
 
@@ -405,6 +420,8 @@ export async function getOutboundEvidenceExceptions(
     // 택배/화물: 운송장 첨부 + 수량 일치 필요
     if (!t.evidence_file_url) {
       exceptions.push({ ...base, reason: '증빙 미첨부' })
+    } else if (t.evidence_review_needed) {
+      exceptions.push({ ...base, reason: '검토 필요', detail: t.evidence_review_reason || null })
     } else if (t.evidence_quantity !== t.quantity) {
       exceptions.push({ ...base, reason: '증빙수량 불일치' })
     }
