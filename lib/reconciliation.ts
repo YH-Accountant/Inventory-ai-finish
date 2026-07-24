@@ -53,6 +53,11 @@ export interface UnmatchedRow {
   display_location: string
   quantity: number
   reason: '승인문서 없음' | '승인수량 초과'
+  acknowledged?: boolean          // 소명 확인(승인) 완료 여부
+  review_reason?: string | null   // 소명 사유
+  reviewed_by?: string | null     // 소명 확인자(승인권자)
+  explained_by?: string | null    // 소명 제출자(소명자)
+  transaction_ids?: string[]      // 이 행에 해당하는 실물기록 id (소명 저장 대상)
 }
 
 interface DisplaySample {
@@ -69,7 +74,7 @@ async function reconcile(
   txType: '입고' | '출고',
   docSecondaryKey: (doc: AnyRow) => { key: string; display: string },
   txSecondaryKey: (tx: AnyRow) => { key: string; display: string }
-): Promise<{ progress: ReconciliationProgressRow[]; unmatched: UnmatchedRow[] }> {
+): Promise<{ progress: ReconciliationProgressRow[]; unmatched: UnmatchedRow[]; explainedUnmatched: UnmatchedRow[]; acknowledgedUnmatched: UnmatchedRow[] }> {
   const { data: docs } = await client
     .from('approval_documents')
     .select(`
@@ -85,11 +90,11 @@ async function reconcile(
 
   const { data: txs } = await client
     .from('transactions')
-    .select('id, product_id, warehouse_id, channel, quantity, note, sub_type, created_at, products(product_name, product_code), warehouses(name)')
+    .select('id, product_id, warehouse_id, channel, quantity, note, sub_type, created_at, unmatched_reviewed_at, unmatched_reviewed_by, unmatched_review_reason, unmatched_explained_at, unmatched_explained_by, products(product_name, product_code), warehouses(name)')
     .eq('company_id', companyId)
     .eq('type', txType)
 
-  interface TxEntry { remaining: number; created_at: string }
+  interface TxEntry { id: string; remaining: number; created_at: string; reviewed: boolean; reviewReason: string | null; reviewedBy: string | null; explained: boolean; explainedBy: string | null }
 
   const productNameById: Record<string, { product_name: string; product_code: string }> = {}
   const sampleByKey: Record<string, DisplaySample> = {}
@@ -104,7 +109,14 @@ async function reconcile(
     const key = `${t.product_id}::${locKey}`
     if (!sampleByKey[key]) sampleByKey[key] = { display_location: display }
     if (!txsByKey[key]) txsByKey[key] = []
-    txsByKey[key].push({ remaining: t.quantity, created_at: t.created_at })
+    txsByKey[key].push({
+      id: t.id, remaining: t.quantity, created_at: t.created_at,
+      reviewed: !!t.unmatched_reviewed_at,
+      reviewReason: t.unmatched_review_reason ?? null,
+      reviewedBy: t.unmatched_reviewed_by ?? null,
+      explained: !!t.unmatched_explained_at,
+      explainedBy: t.unmatched_explained_by ?? null
+    })
   })
   // 문서별로 "먼저 들어온 실물기록"부터 소진하도록 시간순 정렬
   Object.values(txsByKey).forEach(list => list.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()))
@@ -152,21 +164,44 @@ async function reconcile(
     })
   })
 
+  // 초과분(leftover)을 키별로 3단계로 분리한다 (소명 2단계·직무분리).
+  //   ① unmatched            = 미소명(소명 제출 전)  → 기존 소비자(대시보드·알림)에 그대로 노출
+  //   ② explainedUnmatched   = 소명 검토중(소명자 제출, 확인자 미승인) → 예외리스트에서 확인 대기
+  //   ③ acknowledgedUnmatched= 소명 완료(확인자 승인까지) → 예외리스트에서만 회색으로
   const unmatched: UnmatchedRow[] = []
+  const explainedUnmatched: UnmatchedRow[] = []
+  const acknowledgedUnmatched: UnmatchedRow[] = []
   Object.entries(txsByKey).forEach(([key, list]) => {
-    const leftover = list.reduce((sum, e) => sum + e.remaining, 0)
-    if (leftover <= 0) return
+    const withLeftover = list.filter(e => e.remaining > 0)
+    if (withLeftover.length === 0) return
     const productId = key.split('::')[0]
-    unmatched.push({
+    const base = {
       product_id: productId,
       product_name: productNameById[productId]?.product_name || '',
       display_location: sampleByKey[key]?.display_location || '',
-      quantity: leftover,
-      reason: keysWithDoc.has(key) ? '승인수량 초과' : '승인문서 없음'
-    })
+      reason: (keysWithDoc.has(key) ? '승인수량 초과' : '승인문서 없음') as '승인수량 초과' | '승인문서 없음'
+    }
+    const open = withLeftover.filter(e => !e.explained && !e.reviewed)
+    const explaining = withLeftover.filter(e => e.explained && !e.reviewed)
+    const acked = withLeftover.filter(e => e.reviewed)
+    if (open.length > 0) {
+      unmatched.push({ ...base, quantity: open.reduce((s, e) => s + e.remaining, 0), acknowledged: false, transaction_ids: open.map(e => e.id) })
+    }
+    if (explaining.length > 0) {
+      explainedUnmatched.push({
+        ...base, quantity: explaining.reduce((s, e) => s + e.remaining, 0), acknowledged: false,
+        review_reason: explaining[0].reviewReason, explained_by: explaining[0].explainedBy, transaction_ids: explaining.map(e => e.id)
+      })
+    }
+    if (acked.length > 0) {
+      acknowledgedUnmatched.push({
+        ...base, quantity: acked.reduce((s, e) => s + e.remaining, 0), acknowledged: true,
+        review_reason: acked[0].reviewReason, reviewed_by: acked[0].reviewedBy, explained_by: acked[0].explainedBy, transaction_ids: acked.map(e => e.id)
+      })
+    }
   })
 
-  return { progress, unmatched }
+  return { progress, unmatched, explainedUnmatched, acknowledgedUnmatched }
 }
 
 export function getInboundReconciliation(companyId: string, client: SupabaseClient = defaultClient) {

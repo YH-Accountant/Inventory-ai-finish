@@ -57,6 +57,11 @@ export default function ExceptionsPage() {
   const { profile } = useAuth()
   const [missing, setMissing] = useState<LabeledMissing[]>([])
   const [unmatched, setUnmatched] = useState<LabeledUnmatched[]>([])
+  const [explainedUnmatched, setExplainedUnmatched] = useState<LabeledUnmatched[]>([])
+  const [acknowledgedUnmatched, setAcknowledgedUnmatched] = useState<LabeledUnmatched[]>([])
+  const [acknowledgingKey, setAcknowledgingKey] = useState<string | null>(null)
+  const [ackReason, setAckReason] = useState('')
+  const [ackSaving, setAckSaving] = useState(false)
   const [evidenceExceptions, setEvidenceExceptions] = useState<LabeledEvidence[]>([])
   const [completedEvidence, setCompletedEvidence] = useState<CompletedEvidenceRow[]>([])
   const [nonTransport, setNonTransport] = useState<NonTransportRow[]>([])
@@ -137,6 +142,14 @@ export default function ExceptionsPage() {
       ...inbound.unmatched.map(u => ({ ...u, source: '입고' as SourceLabel })),
       ...outbound.unmatched.map(u => ({ ...u, source: '출고' as SourceLabel }))
     ])
+    setExplainedUnmatched([
+      ...inbound.explainedUnmatched.map(u => ({ ...u, source: '입고' as SourceLabel })),
+      ...outbound.explainedUnmatched.map(u => ({ ...u, source: '출고' as SourceLabel }))
+    ])
+    setAcknowledgedUnmatched([
+      ...inbound.acknowledgedUnmatched.map(u => ({ ...u, source: '입고' as SourceLabel })),
+      ...outbound.acknowledgedUnmatched.map(u => ({ ...u, source: '출고' as SourceLabel }))
+    ])
 
     setEvidenceExceptions([
       ...inboundEvidence.map(e => ({ ...e, source: '입고' as EvidenceSourceLabel })),
@@ -180,6 +193,56 @@ export default function ExceptionsPage() {
     setAttachFile(null)
     setAttachQty('')
     setAttachShippingType('')
+  }
+
+  // ── 승인문서 없음/초과 건 "소명" — 사후승인은 안 되므로(대사가 승인 이후 출고만 인정),
+  //    사유를 기록하고 확인 처리하면 open 플래그는 닫히되 발생·사유·처리자는 남긴다.
+  //    직무분리: 소명 '제출'(누구나) 과 소명 '확인(승인)'(승인권자, 단 제출자 본인 제외)을 분리한다.
+  const unmatchedRowKey = (u: LabeledUnmatched) => `${u.source}::${u.product_id}::${u.display_location}`
+  // 승인권자 = 관리책임자/대표. (자기소명 자기확인 방지는 이름 비교로 별도 처리)
+  const isApprover = profile?.position === '관리책임자' || profile?.position === '대표'
+
+  // 1단계: 소명 제출 (소명자) — 사유를 남기고 '검토중' 상태로 넘긴다. 확인(승인)은 아직 아님.
+  async function handleExplain(u: LabeledUnmatched) {
+    if (!profile?.company_id || !u.transaction_ids?.length) return
+    if (!ackReason.trim()) { alert('소명 사유를 입력해주세요.'); return }
+    setAckSaving(true)
+    const { error } = await supabase.from('transactions').update({
+      unmatched_explained_at: new Date().toISOString(),
+      unmatched_explained_by: profile.name || null,
+      unmatched_review_reason: ackReason.trim()
+    }).in('id', u.transaction_ids)
+    setAckSaving(false)
+    if (error) { alert('저장 실패: ' + error.message); return }
+    setAcknowledgingKey(null); setAckReason('')
+    load(profile.company_id)
+  }
+
+  // 2단계: 소명 확인(승인) (소명확인자=승인권자) — 제출자 본인은 확인 불가(직무분리).
+  async function handleConfirm(u: LabeledUnmatched) {
+    if (!profile?.company_id || !u.transaction_ids?.length) return
+    if (!isApprover) { alert('소명 확인은 승인권자(관리책임자·대표)만 할 수 있습니다.'); return }
+    if (u.explained_by && profile.name && u.explained_by === profile.name) {
+      alert('소명을 제출한 본인은 확인할 수 없습니다 (직무분리).'); return
+    }
+    const { error } = await supabase.from('transactions').update({
+      unmatched_reviewed_at: new Date().toISOString(),
+      unmatched_reviewed_by: profile.name || null
+    }).in('id', u.transaction_ids)
+    if (error) { alert('저장 실패: ' + error.message); return }
+    load(profile.company_id)
+  }
+
+  // 소명 취소 — 제출/확인 상태를 모두 되돌려 다시 '미소명'으로. (검토중·완료 어디서든)
+  async function handleWithdraw(u: LabeledUnmatched) {
+    if (!profile?.company_id || !u.transaction_ids?.length) return
+    const { error } = await supabase.from('transactions').update({
+      unmatched_reviewed_at: null, unmatched_reviewed_by: null,
+      unmatched_explained_at: null, unmatched_explained_by: null,
+      unmatched_review_reason: null
+    }).in('id', u.transaction_ids)
+    if (error) { alert('저장 실패: ' + error.message); return }
+    load(profile.company_id)
   }
 
   // 외부증빙 자동검증 호출. 통과 못 하거나 에러면 안전하게 '검토 필요'로 본다(완료 자동승격 금지).
@@ -450,23 +513,115 @@ export default function ExceptionsPage() {
               </p>
             </div>
             <div className="p-3 md:p-6">
-              {unmatched.length === 0 ? (
+              {unmatched.length === 0 && explainedUnmatched.length === 0 && acknowledgedUnmatched.length === 0 ? (
                 <p className="text-gray-500 text-center py-6">해당 사항 없습니다.</p>
               ) : (
                 <div className="space-y-2">
+                  {/* ① 미소명 — 누구나 소명(사유 제출) 가능 */}
                   {unmatched.map((u, i) => (
-                    <div key={`${u.product_id}-${i}`} className="flex items-center justify-between border-b py-2">
-                      <div>
-                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 mr-2">{u.source}</span>
-                        <span className="font-medium text-sm">{u.product_name}</span>
-                        <span className="text-xs text-gray-500 ml-2">{u.display_location}</span>
+                    <div key={`${u.product_id}-${i}`} className="border-b py-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div>
+                          <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 mr-2">{u.source}</span>
+                          <span className="font-medium text-sm">{u.product_name}</span>
+                          <span className="text-xs text-gray-500 ml-2">{u.display_location}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="text-right text-sm">
+                            <span className="text-red-600 font-semibold">{u.quantity.toLocaleString()}개</span>
+                            <span className="text-gray-400 text-xs ml-1">({u.reason})</span>
+                          </div>
+                          <button
+                            onClick={() => acknowledgingKey === unmatchedRowKey(u) ? setAcknowledgingKey(null) : (setAcknowledgingKey(unmatchedRowKey(u)), setAckReason(''))}
+                            className="text-xs bg-red-600 text-white px-2.5 py-1 rounded-lg hover:bg-red-700 transition shrink-0"
+                          >
+                            {acknowledgingKey === unmatchedRowKey(u) ? '취소' : '소명'}
+                          </button>
+                        </div>
                       </div>
-                      <div className="text-right text-sm">
-                        <span className="text-red-600 font-semibold">{u.quantity.toLocaleString()}개</span>
-                        <span className="text-gray-400 text-xs ml-1">({u.reason})</span>
-                      </div>
+                      {acknowledgingKey === unmatchedRowKey(u) && (
+                        <div className="mt-2 bg-gray-50 rounded-lg p-3 flex flex-wrap items-end gap-3">
+                          <div className="flex-1 min-w-[220px]">
+                            <label className="block text-xs text-gray-500 mb-1">소명 사유 (왜 승인 없이 처리됐는지)</label>
+                            <input
+                              type="text"
+                              value={ackReason}
+                              onChange={e => setAckReason(e.target.value)}
+                              placeholder="예: 긴급 출고 후 사후보고 / 승인 절차 누락"
+                              className="w-full border rounded-lg px-2 py-1.5 text-sm"
+                            />
+                          </div>
+                          <button
+                            onClick={() => handleExplain(u)}
+                            disabled={ackSaving}
+                            className="bg-orange-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-orange-700 disabled:opacity-50 transition shrink-0"
+                          >
+                            {ackSaving ? '저장 중...' : '소명 제출'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
+
+                  {/* ② 소명 검토중 — 소명자가 사유 제출함, 승인권자(제출자 제외)의 확인 대기 */}
+                  {explainedUnmatched.map((u, i) => {
+                    const isOwnExplanation = !!u.explained_by && !!profile?.name && u.explained_by === profile.name
+                    const canConfirm = isApprover && !isOwnExplanation
+                    return (
+                      <div key={`exp-${u.product_id}-${i}`} className="border-b py-2 bg-amber-50/60 rounded-lg px-2">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div>
+                            <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 mr-2">소명 검토중</span>
+                            <span className="font-medium text-sm">{u.product_name}</span>
+                            <span className="text-xs text-gray-500 ml-2">{u.display_location}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="text-right text-sm">
+                              <span className="text-amber-700 font-semibold">{u.quantity.toLocaleString()}개</span>
+                              <span className="text-gray-400 text-xs ml-1">({u.reason})</span>
+                            </div>
+                            {canConfirm ? (
+                              <button
+                                onClick={() => handleConfirm(u)}
+                                className="text-xs bg-green-600 text-white px-2.5 py-1 rounded-lg hover:bg-green-700 transition shrink-0"
+                              >
+                                소명 확인
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-gray-400 shrink-0">
+                                {isOwnExplanation ? '본인 소명 (타 승인권자 확인 필요)' : '승인권자 확인 대기'}
+                              </span>
+                            )}
+                            <button onClick={() => handleWithdraw(u)} className="text-[11px] text-gray-400 hover:text-gray-600 hover:underline shrink-0">취소</button>
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1 pl-1">
+                          사유: {u.review_reason || '(없음)'}{u.explained_by ? ` · 소명자: ${u.explained_by}` : ''}
+                        </p>
+                      </div>
+                    )
+                  })}
+
+                  {unmatched.length === 0 && explainedUnmatched.length === 0 && (
+                    <p className="text-gray-400 text-sm py-2">미소명·검토중 건 없음 (아래 소명 완료만 있음)</p>
+                  )}
+                </div>
+              )}
+              {acknowledgedUnmatched.length > 0 && (
+                <div className="mt-4 text-xs text-gray-400">
+                  <p className="mb-1.5 font-medium">소명 완료 {acknowledgedUnmatched.length}건 — 발생 사실은 기록으로 남습니다</p>
+                  <div className="pl-2 space-y-1">
+                    {acknowledgedUnmatched.map((u, i) => (
+                      <div key={`ack-${u.product_id}-${i}`} className="flex items-center justify-between gap-2">
+                        <span>
+                          · [{u.source}] {u.product_name} · {u.display_location} · {u.quantity.toLocaleString()}개
+                          {u.review_reason ? ` — ${u.review_reason}` : ''}
+                          {u.explained_by ? ` (소명 ${u.explained_by}` : ''}{u.explained_by && u.reviewed_by ? ` → 확인 ${u.reviewed_by})` : u.explained_by ? ')' : u.reviewed_by ? ` (확인 ${u.reviewed_by})` : ''}
+                        </span>
+                        <button onClick={() => handleWithdraw(u)} className="text-gray-400 hover:text-gray-600 hover:underline shrink-0">소명 취소</button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
