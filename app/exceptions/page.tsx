@@ -246,7 +246,8 @@ export default function ExceptionsPage() {
         evidence_file_url: path,
         evidence_quantity: Number(attachQty),
         evidence_review_needed: !verify.verified,
-        evidence_review_reason: verify.verified ? null : verify.reason
+        evidence_review_reason: verify.verified ? null : verify.reason,
+        evidence_recorded_by: profile?.name || null
       }
       if (row.source === '출고') updatePayload.shipping_type = '택배/화물'
 
@@ -322,7 +323,8 @@ export default function ExceptionsPage() {
           evidence_quantity: t.quantity,
           shipping_type: '택배/화물',
           evidence_review_needed: !verify.verified,
-          evidence_review_reason: verify.verified ? null : verify.reason
+          evidence_review_reason: verify.verified ? null : verify.reason,
+          evidence_recorded_by: profile?.name || null
         }).eq('id', t.transaction_id)
       ))
       const failed = results.find(r => r.error)

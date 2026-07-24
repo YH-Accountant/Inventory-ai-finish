@@ -570,7 +570,7 @@ export default function ApprovalDetailPage() {
                               const isNonTransport = doc.doc_type === '출고지시서' && (t.shipping_type === '자차배송' || t.shipping_type === '직접픽업')
                               return (
                                 <li key={t.id} className="flex items-center gap-2">
-                                  <span className="text-gray-500">{formatDate(t.created_at)} · {t.quantity.toLocaleString()}개</span>
+                                  <span className="text-gray-500">{formatDate(t.created_at)} · {t.quantity.toLocaleString()}개{t.evidence_recorded_by ? ` · ${t.evidence_recorded_by}` : ''}</span>
                                   {isNonTransport ? (
                                     <span className="text-gray-400">({t.shipping_type}, 운송장 불필요)</span>
                                   ) : t.evidence_file_url ? (
