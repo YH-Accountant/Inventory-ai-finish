@@ -488,11 +488,11 @@ action:"출고"는 반드시 sub_type("판매"|"내부사용"|"폐기")을 포�
     let dupCount = 0
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        // gpt-5 계열은 temperature 커스텀 미지원 (기본값 고정)
+        model: 'gpt-5.4-mini',
         messages,
         tools,
         tool_choice: 'auto',
-        temperature: 0.1,
       })
 
       const assistantMsg = completion.choices[0].message

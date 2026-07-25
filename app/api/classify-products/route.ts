@@ -15,7 +15,7 @@ export async function POST(request: Request) {
 
 
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.4-mini',
       messages: [
         {
           role: 'system',
@@ -58,8 +58,8 @@ JSON으로만 응답 (다른 텍스트 없이):
           content: `다음 제품들을 분류해 주세요:\n${productNames.join('\n')}`
         }
       ],
-      temperature: 0.1,
-      max_tokens: 1000
+      // gpt-5 계열: temperature 미지원, max_tokens 대신 max_completion_tokens(추론 토큰 포함이라 여유 있게)
+      max_completion_tokens: 4000
     })
 
     const content = response.choices[0]?.message?.content || '{}'

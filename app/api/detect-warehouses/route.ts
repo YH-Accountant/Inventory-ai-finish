@@ -44,7 +44,7 @@ export async function POST(request: Request) {
 창고가 없으면: {"warehouses": []}`
 
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.4-mini',
       messages: [
         {
           role: 'system',
@@ -55,7 +55,7 @@ export async function POST(request: Request) {
           content: prompt
         }
       ],
-      temperature: 0,
+      // gpt-5 계열은 temperature 커스텀 미지원 (기본값 고정)
       response_format: { type: 'json_object' }
     })
 
