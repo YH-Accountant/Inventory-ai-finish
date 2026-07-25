@@ -35,15 +35,15 @@ async function extractPdfText(buffer: Buffer): Promise<string | null> {
   }
 }
 
-// 스캔본(이미지) 증빙: GPT-4o mini vision으로 본문 텍스트만 추출 (판정은 아래 규칙이 결정론적으로)
+// 스캔본(이미지) 증빙: GPT-5.4 mini vision으로 본문 텍스트만 추출 (판정은 아래 규칙이 결정론적으로)
 async function extractImageText(base64: string, contentType: string): Promise<string | null> {
   if (!process.env.OPENAI_API_KEY) return null
   try {
     const { default: OpenAI } = await import('openai')
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      temperature: 0,
+      // gpt-5 계열은 temperature 커스텀 미지원 (기본값 고정) — 넣으면 400 에러
+      model: 'gpt-5.4-mini',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       messages: [{
         role: 'user',

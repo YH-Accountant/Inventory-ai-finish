@@ -196,7 +196,10 @@ export default function ChatWidget() {
 
   interface PendingPartial {
     actionData: NonNullable<Message['data']>
-    waitingFor: 'product' | 'warehouse'
+    // recipient: 내부사용 세부사유/수령자 되묻기 — 답변을 GPT 재해석 없이 로컬에서 병합해
+    // 이미 파악된 품목·수량이 문답 중에 증발하는 문제를 원천 차단한다
+    waitingFor: 'product' | 'warehouse' | 'recipient'
+    entry?: 'single' | 'multi'   // recipient 해결 후 재진입할 경로
     productChoices?: Product[]
     warehouseChoices?: Warehouse[]
     confirmedProduct?: Product
@@ -232,10 +235,18 @@ export default function ChatWidget() {
     }
   }, [profile?.company_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 새로고침(reload) 후에도 대화 복원 — 입출고 확정 시 sessionStorage에 저장함
+  // 새로고침(reload) 후에도 대화 복원 — 입출고 확정 시 sessionStorage에 저장함.
+  // 저장 키에 사용자 id를 붙여 계정별로 분리하고, 로그인 계정이 바뀌면(로그아웃 포함)
+  // 이전 계정의 대화·진행중 확인 단계가 화면에 남지 않도록 리셋 후 해당 계정 것만 복원.
   useEffect(() => {
+    setMessages(DEFAULT_CHAT_MESSAGES)
+    setPendingAction(null)
+    setPendingMultiAction(null)
+    setPendingPartial(null)
     try {
-      const raw = sessionStorage.getItem(CHAT_MESSAGES_STORAGE_KEY)
+      sessionStorage.removeItem(CHAT_MESSAGES_STORAGE_KEY) // 계정 구분 없던 구버전 키 정리
+      if (!profile?.id) return
+      const raw = sessionStorage.getItem(`${CHAT_MESSAGES_STORAGE_KEY}:${profile.id}`)
       if (!raw) return
       const parsed: unknown = JSON.parse(raw)
       if (!isPersistedMessageList(parsed)) return
@@ -243,7 +254,7 @@ export default function ChatWidget() {
     } catch {
       /* ignore */
     }
-  }, [])
+  }, [profile?.id])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -445,6 +456,7 @@ export default function ChatWidget() {
     if (data.sub_type === '내부사용') {
       if (!data.internal_use_reason || !data.internal_use_recipient) {
         setMessages(prev => [...prev, { role: 'assistant', content: '내부사용 세부사유(샘플/협찬)와 수령자를 알려주세요.' }])
+        setPendingPartial({ actionData: data, waitingFor: 'recipient', entry: 'multi' })
         return
       }
       if (data.internal_use_reason === '샘플') {
@@ -456,6 +468,7 @@ export default function ChatWidget() {
             role: 'assistant',
             content: `"${data.internal_use_recipient}"님이 여러 명입니다. 사번으로 다시 알려주세요: ${list}`
           }])
+          setPendingPartial({ actionData: { ...data, internal_use_recipient: undefined }, waitingFor: 'recipient', entry: 'multi' })
           return
         }
         if (unmatched) {
@@ -464,6 +477,7 @@ export default function ChatWidget() {
             role: 'assistant',
             content: `"${data.internal_use_recipient}"님을 찾을 수 없습니다. 등록된 사용자 중 누구인가요? (${staffNames})`
           }])
+          setPendingPartial({ actionData: { ...data, internal_use_recipient: undefined }, waitingFor: 'recipient', entry: 'multi' })
           return
         }
         resolvedRecipientUserId = id!
@@ -663,7 +677,7 @@ export default function ChatWidget() {
         role: 'assistant',
         content: `출고 완료!\n\n차감 내역:\n${deductionSummaries.map(d => `- ${d}`).join('\n')}`
       }]
-      try { sessionStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(next)) } catch { /* quota 등 */ }
+      try { if (profile?.id) sessionStorage.setItem(`${CHAT_MESSAGES_STORAGE_KEY}:${profile.id}`, JSON.stringify(next)) } catch { /* quota 등 */ }
       return next
     })
     setPendingMultiAction(null)
@@ -697,6 +711,7 @@ export default function ChatWidget() {
             role: 'assistant',
             content: '내부사용 세부사유(샘플/협찬)와 수령자를 알려주세요.'
           }])
+          setPendingPartial({ actionData: data, waitingFor: 'recipient', entry: 'single' })
           return
         }
         if (data.internal_use_reason === '샘플') {
@@ -707,6 +722,7 @@ export default function ChatWidget() {
               role: 'assistant',
               content: `"${data.internal_use_recipient}"님이 여러 명입니다. 사번으로 다시 알려주세요: ${list}`
             }])
+            setPendingPartial({ actionData: { ...data, internal_use_recipient: undefined }, waitingFor: 'recipient', entry: 'single' })
             return
           }
           if (unmatched) {
@@ -715,6 +731,7 @@ export default function ChatWidget() {
               role: 'assistant',
               content: `"${data.internal_use_recipient}"님을 찾을 수 없습니다. 등록된 사용자 중 누구인가요? (${staffNames})`
             }])
+            setPendingPartial({ actionData: { ...data, internal_use_recipient: undefined }, waitingFor: 'recipient', entry: 'single' })
             return
           }
           data = { ...data, internal_use_recipient: name!, internal_use_recipient_user_id: id! }
@@ -800,6 +817,34 @@ export default function ChatWidget() {
       }
       setPendingPartial(null)
       proceedToConfirm(pendingPartial.actionData, pendingPartial.confirmedProduct!, selected)
+
+    } else if (pendingPartial.waitingFor === 'recipient') {
+      // 답변("샘플", "이승인", "샘플 이승인", 사번 등)을 로컬에서 병합 — 품목·수량은 actionData에 이미 보존됨
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const merged: any = { ...pendingPartial.actionData }
+      const msg = userMessage.trim()
+      if (/협찬/.test(msg)) merged.internal_use_reason = '협찬'
+      else if (/샘플|테스트/.test(msg)) merged.internal_use_reason = '샘플'
+      if (!merged.internal_use_recipient) {
+        // 사유 단어를 뺀 나머지를 수령자 후보로 (등록 사용자 매칭은 재진입한 resolve 쪽에서 수행)
+        const rest = msg.replace(/샘플|협찬|테스트/g, '').replace(/[,，]/g, ' ').trim()
+        if (rest) merged.internal_use_recipient = rest
+      }
+      if (!merged.internal_use_reason || !merged.internal_use_recipient) {
+        const missing = [
+          !merged.internal_use_reason ? '세부사유(샘플/협찬)' : null,
+          !merged.internal_use_recipient ? '수령자' : null
+        ].filter(Boolean).join('와 ')
+        setMessages(prev => [...prev, { role: 'assistant', content: `내부사용 ${missing}를 알려주세요.` }])
+        setPendingPartial({ ...pendingPartial, actionData: merged })
+        return
+      }
+      setPendingPartial(null)
+      if (pendingPartial.entry === 'multi') {
+        await resolveMultiOutbound(merged)
+      } else {
+        await resolveAction(merged)
+      }
     }
   }
 
@@ -836,7 +881,9 @@ export default function ChatWidget() {
         ...messages,
         { role: 'user', content: userMessage }
       ]
-      const recentHistory = historySource.slice(-6).map(m => ({
+      // 12개 미만이면 문답이 3~4회만 오가도 첫 문장(품목·수량)이 창밖으로 밀려나
+      // AI가 "무엇을 출고할까요?"로 되돌아가는 문제가 생김
+      const recentHistory = historySource.slice(-12).map(m => ({
         role: m.role,
         content: m.content
       }))
@@ -1161,7 +1208,7 @@ export default function ChatWidget() {
         setMessages(prev => {
           const next: Message[] = [...prev, { role: 'assistant', content: completionMsg }]
           try {
-            sessionStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(next))
+            if (profile?.id) sessionStorage.setItem(`${CHAT_MESSAGES_STORAGE_KEY}:${profile.id}`, JSON.stringify(next))
           } catch {
             /* quota 등 */
           }

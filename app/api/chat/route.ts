@@ -453,10 +453,17 @@ action:"출고"는 반드시 sub_type("판매"|"내부사용"|"폐기")을 포�
 1. channel이 있으면 → sub_type:"판매" (더 물어볼 필요 없음, 바로 진행)
 2. "폐기"/"버림"/"불량 처리" 언급 → sub_type:"폐기" (더 물어볼 필요 없음, 바로 진행)
 3. "내부사용"/"내부반출"/"반출"/"사내"/"사무실로"/"직원 지급"/"협찬"/"테스트용"/"테스트"/"샘플"/"샘플출고"/"샘플로 나감" 언급 → sub_type:"내부사용"
+   - ★ 내부사용(또는 폐기)으로 판단되면 channel은 절대 묻지도 채우지도 말 것. 채널 질문은 sub_type이 "판매"일 때만 허용됨
+   - ★ "사무실"/"회사"/"본사" 같은 장소 표현은 internal_use_recipient(수령자)가 아님 — 수령자는 반드시 사람 이름. 장소 표현만 있고 사람 이름이 없으면 수령자를 물을 것
    - internal_use_reason은 딱 "샘플" 또는 "협찬" 둘 중 하나만 가능(그 외 값 절대 금지). "테스트"라고 말해도 internal_use_reason은 "샘플"로 매핑할 것(테스트는 샘플 카테고리에 포함됨). "협찬"이라고 명시했을 때만 "협찬"
-   - internal_use_reason과 internal_use_recipient(수령자 이름)까지 둘 다 있어야 action:"출고" 반환. 없으면 action:"질문"으로 "내부사용 세부사유(샘플/협찬)와 수령자를 알려주세요"만 묻고 끝낼 것
+   - internal_use_reason과 internal_use_recipient(수령자 이름)까지 둘 다 있어야 action:"출고" 반환. 없으면 action:"질문"으로 "내부사용 세부사유(샘플/협찬)와 수령자를 알려주세요"만 묻고 끝낼 것 (이미 답한 항목은 다시 묻지 말 것)
 4. 위 어디에도 해당 안 되면(채널·내부사용·폐기 표현이 전혀 없으면) → action:"질문"으로 딱 이거 하나만 물을 것: "판매(어느 채널인가요? ${channelNames}), 내부사용(사내 반출), 폐기 중 어느 경우인가요?"
 ★ 재고 수량 확인·창고 선택 등 다른 이유로 질문하지 말 것 — sub_type 판단은 재고 조회와 무관하게 사용자 문장만으로 즉시 정해짐
+
+## 문답 이어가기 규칙 (매우 중요 — 정보 누락 금지)
+- action:"질문"에 사용자가 답하면, 그 답은 직전 질문에 대한 보충임. 이전 턴들에서 이미 확보한 품목·수량·창고·sub_type·세부사유·수령자·날짜는 전부 그대로 유지하고, 사용자가 새로 말한 항목만 채울 것
+- 이미 확보된 항목을 다시 묻는 것 절대 금지 (예: 품목·수량을 이미 말했는데 "무엇을 출고할까요?"라고 되묻지 말 것)
+- 보충 답변까지 합쳐 필수 항목이 모두 모였으면 즉시 action:"출고"/"입고" JSON으로 완결할 것
 
 ## 제품/창고 선택 규칙 (매우 중요)
 - 입출고 action을 반환할 때 절대로 제품 선택 질문하지 말 것
@@ -488,11 +495,11 @@ action:"출고"는 반드시 sub_type("판매"|"내부사용"|"폐기")을 포�
     let dupCount = 0
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        // gpt-5 계열은 temperature 커스텀 미지원 (기본값 고정)
+        model: 'gpt-5.4-mini',
         messages,
         tools,
         tool_choice: 'auto',
-        temperature: 0.1,
       })
 
       const assistantMsg = completion.choices[0].message

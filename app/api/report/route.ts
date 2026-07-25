@@ -302,13 +302,13 @@ ${expiringProducts.length > 0 ? expiringProducts.slice(0, 10).map(p =>
 간결하게 작성하세요. 데이터가 부족하면 "데이터 부족"이라고 명시하세요.`
 
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.4-mini',
       messages: [
         { role: 'system', content: '재고관리 전문가로서 간결하고 실용적인 리포트를 작성합니다.' },
         { role: 'user', content: prompt }
       ],
-      temperature: 0.3,
-      max_tokens: 1000
+      // gpt-5 계열: temperature 미지원, max_tokens 대신 max_completion_tokens(추론 토큰 포함이라 여유 있게)
+      max_completion_tokens: 4000
     })
 
     const report = response.choices[0]?.message?.content || '리포트 생성 실패'
