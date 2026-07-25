@@ -115,6 +115,43 @@ function resolveRegisteredRecipient(
   return { id: null, name: null, unmatched: true, ambiguous: null }
 }
 
+// "vk운데이션"처럼 앞뒤에 잡음이 붙은 오타는 substring 포함 매칭이 실패하므로,
+// 최장 공통 부분문자열(3글자 이상)로 후보를 찾아 "혹시 이 제품인가요?"로 제안한다.
+// 자동 확정은 절대 안 함(오타 추측으로 엉뚱한 품목이 출고되는 게 못 찾는 것보다 위험) —
+// 반드시 사용자가 번호로 선택해야 진행.
+function longestCommonSubstringLen(a: string, b: string): number {
+  let max = 0
+  const dp = new Array(b.length + 1).fill(0)
+  for (let i = 1; i <= a.length; i++) {
+    let prev = 0
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j]
+      dp[j] = a[i - 1] === b[j - 1] ? prev + 1 : 0
+      if (dp[j] > max) max = dp[j]
+      prev = tmp
+    }
+  }
+  return max
+}
+
+function suggestSimilarProducts(keyword: string, products: Product[]): Product[] {
+  const kw = keyword.replace(/\s+/g, '')
+  if (kw.length < 2) return []
+  const threshold = Math.min(3, kw.length)
+  return products
+    .map(p => ({
+      p,
+      score: Math.max(
+        longestCommonSubstringLen(kw, p.product_name.replace(/\s+/g, '')),
+        longestCommonSubstringLen(kw, p.product_code)
+      )
+    }))
+    .filter(x => x.score >= threshold)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(x => x.p)
+}
+
 // GPT가 다품목 요청(예: "쿠션100+립밤100 출고")을 프롬프트 지침대로 items 배열로 안정적으로
 // 반환하지 못하는 경우가 있어(모델이 지침을 놓치고 첫 품목만 단일 action으로 반환), 원문을
 // "키워드+수량+개" 패턴으로 직접 스캔해서 프론트에서 다품목 여부를 다시 한번 확정 판단한다.
@@ -475,7 +512,7 @@ export default function ChatWidget() {
           const staffNames = staffProfiles.map(s => s.name).join(', ')
           setMessages(prev => [...prev, {
             role: 'assistant',
-            content: `"${data.internal_use_recipient}"님을 찾을 수 없습니다. 등록된 사용자 중 누구인가요? (${staffNames})`
+            content: `"${data.internal_use_recipient}"님을 찾을 수 없습니다. 등록된 사용자 중 누구인가요?${staffNames ? ` (${staffNames})` : ''}`
           }])
           setPendingPartial({ actionData: { ...data, internal_use_recipient: undefined }, waitingFor: 'recipient', entry: 'multi' })
           return
@@ -729,7 +766,7 @@ export default function ChatWidget() {
             const staffNames = staffProfiles.map(s => s.name).join(', ')
             setMessages(prev => [...prev, {
               role: 'assistant',
-              content: `"${data.internal_use_recipient}"님을 찾을 수 없습니다. 등록된 사용자 중 누구인가요? (${staffNames})`
+              content: `"${data.internal_use_recipient}"님을 찾을 수 없습니다. 등록된 사용자 중 누구인가요?${staffNames ? ` (${staffNames})` : ''}`
             }])
             setPendingPartial({ actionData: { ...data, internal_use_recipient: undefined }, waitingFor: 'recipient', entry: 'single' })
             return
@@ -757,6 +794,16 @@ export default function ChatWidget() {
     )
 
     if (matched.length === 0) {
+      const candidates = suggestSimilarProducts(keyword, products)
+      if (candidates.length > 0) {
+        const list = candidates.map((p, i) => `${i + 1}. ${p.product_name}`).join('\n')
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `"${keyword}" 제품을 찾을 수 없습니다. 혹시 이 중 하나인가요?\n${list}\n(번호로 선택, 아니면 "아니오")`
+        }])
+        setPendingPartial({ actionData: data, waitingFor: 'product', productChoices: candidates })
+        return
+      }
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: `"${keyword}" 제품을 찾을 수 없습니다.`
@@ -781,6 +828,12 @@ export default function ChatWidget() {
     if (!pendingPartial) return
 
     if (pendingPartial.waitingFor === 'product') {
+      // 유사 매칭 제안("혹시 이 제품인가요?")에서 아니라고 하면 요청 전체를 접는다
+      if (/^(아니오|아니요|아니|취소|no)$/i.test(userMessage.trim())) {
+        setPendingPartial(null)
+        setMessages(prev => [...prev, { role: 'assistant', content: '알겠습니다. 정확한 제품명으로 다시 말씀해주세요.' }])
+        return
+      }
       const choices = pendingPartial.productChoices || []
       const num = parseInt(userMessage)
       let selected: Product | undefined
