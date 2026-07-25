@@ -232,10 +232,18 @@ export default function ChatWidget() {
     }
   }, [profile?.company_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 새로고침(reload) 후에도 대화 복원 — 입출고 확정 시 sessionStorage에 저장함
+  // 새로고침(reload) 후에도 대화 복원 — 입출고 확정 시 sessionStorage에 저장함.
+  // 저장 키에 사용자 id를 붙여 계정별로 분리하고, 로그인 계정이 바뀌면(로그아웃 포함)
+  // 이전 계정의 대화·진행중 확인 단계가 화면에 남지 않도록 리셋 후 해당 계정 것만 복원.
   useEffect(() => {
+    setMessages(DEFAULT_CHAT_MESSAGES)
+    setPendingAction(null)
+    setPendingMultiAction(null)
+    setPendingPartial(null)
     try {
-      const raw = sessionStorage.getItem(CHAT_MESSAGES_STORAGE_KEY)
+      sessionStorage.removeItem(CHAT_MESSAGES_STORAGE_KEY) // 계정 구분 없던 구버전 키 정리
+      if (!profile?.id) return
+      const raw = sessionStorage.getItem(`${CHAT_MESSAGES_STORAGE_KEY}:${profile.id}`)
       if (!raw) return
       const parsed: unknown = JSON.parse(raw)
       if (!isPersistedMessageList(parsed)) return
@@ -243,7 +251,7 @@ export default function ChatWidget() {
     } catch {
       /* ignore */
     }
-  }, [])
+  }, [profile?.id])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -663,7 +671,7 @@ export default function ChatWidget() {
         role: 'assistant',
         content: `출고 완료!\n\n차감 내역:\n${deductionSummaries.map(d => `- ${d}`).join('\n')}`
       }]
-      try { sessionStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(next)) } catch { /* quota 등 */ }
+      try { if (profile?.id) sessionStorage.setItem(`${CHAT_MESSAGES_STORAGE_KEY}:${profile.id}`, JSON.stringify(next)) } catch { /* quota 등 */ }
       return next
     })
     setPendingMultiAction(null)
@@ -1161,7 +1169,7 @@ export default function ChatWidget() {
         setMessages(prev => {
           const next: Message[] = [...prev, { role: 'assistant', content: completionMsg }]
           try {
-            sessionStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(next))
+            if (profile?.id) sessionStorage.setItem(`${CHAT_MESSAGES_STORAGE_KEY}:${profile.id}`, JSON.stringify(next))
           } catch {
             /* quota 등 */
           }
