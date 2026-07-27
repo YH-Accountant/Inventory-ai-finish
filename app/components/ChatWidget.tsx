@@ -163,7 +163,10 @@ function detectMultiItemsFromText(
   products: { product_name: string; product_code: string }[]
 ): { product_name: string; quantity: number }[] {
   const found: { product_name: string; quantity: number; index: number }[] = []
-  const pattern = /([가-힣A-Za-z]+)\s*(\d+)\s*개/g
+  // "개"는 선택 — "립밤100, 파운데이션 10출고"처럼 단위 없이 쓰는 입력이 실제로 많다.
+  // 대신 숫자 뒤가 호/번/차/월/일/년이면 수량이 아니라 규격·날짜이므로 제외하고("쿠션 21호"),
+  // 키워드가 등록 제품과 매칭돼야만 인정하므로 무관한 숫자는 어차피 걸러진다.
+  const pattern = /([가-힣A-Za-z]+)\s*(\d{1,6})\s*개?(?![\d호번차월일년개])/g
   let match: RegExpExecArray | null
   while ((match = pattern.exec(text)) !== null) {
     const keyword = match[1]
@@ -964,7 +967,7 @@ export default function ChatWidget() {
       // GPT가 items 배열을 놓치고 단일 품목 action(또는 헷갈려서 질문)으로 반환하는 경우가 있어,
       // "출고" 키워드가 있고 원문에 등록된 제품이 실제로 2개 이상 + 수량과 함께 등장하면
       // GPT의 판단과 무관하게 프론트에서 다품목으로 확정 처리한다(안전망 — 지침 준수에만 의존 안 함).
-      const isOutboundIntent = userMessage.includes('출고') && (data.action === '출고' || data.action === '질문')
+      const isOutboundIntent = (userMessage.includes('출고') || userMessage.includes('반출')) && (data.action === '출고' || data.action === '질문')
       const detectedItems = isOutboundIntent && !Array.isArray(data.items)
         ? detectMultiItemsFromText(userMessage, products)
         : []
