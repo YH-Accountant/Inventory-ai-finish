@@ -1298,6 +1298,9 @@ export default function ChatWidget() {
     setTimeout(() => inputRef.current?.focus(), 100)
   }
 
+  // 로그인 전(또는 회사 미소속)에는 채팅 위젯 자체를 렌더링하지 않음 — 로그인 화면에 봇이 뜨는 문제
+  if (!profile?.company_id) return null
+
   return (
     <>
       {/* 채팅 버튼 */}
