@@ -1061,18 +1061,22 @@ export default function TransactionsPage() {
                     />
                     <span className="text-orange-600 font-medium">조정 (실사)</span>
                   </label>
-                  {setItems.length > 0 && (
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        value="조립"
-                        checked={formData.type === '조립'}
-                        onChange={(e) => setFormData({...formData, type: e.target.value, sub_type: '', product_id: '', quantity: 0})}
-                        className="mr-2"
-                      />
-                      <span className="text-indigo-600 font-medium">세트 생산</span>
-                    </label>
-                  )}
+                  {/* 세트가 하나도 없어도 여기서 새로 만들 수 있으므로 항상 노출한다 */}
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      value="조립"
+                      checked={formData.type === '조립'}
+                      onChange={(e) => {
+                        setFormData({...formData, type: e.target.value, sub_type: '', product_id: '', quantity: 0})
+                        setIsNewSet(false)
+                        setNewSetName('')
+                        setSetRecipe([{ product_id: '', quantity: 1 }])
+                      }}
+                      className="mr-2"
+                    />
+                    <span className="text-indigo-600 font-medium">세트 생산</span>
+                  </label>
                 </div>
                 {formData.type === '조정' && (
                   <p className="text-xs text-orange-500 mt-1">실사 후 실제 수량을 입력하면 자동으로 차이를 조정합니다.</p>
