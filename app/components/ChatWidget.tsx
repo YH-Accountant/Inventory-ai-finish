@@ -222,6 +222,16 @@ export default function ChatWidget() {
   }
   const [pendingMultiAction, setPendingMultiAction] = useState<MultiOutboundPending | null>(null)
 
+  // 다품목 입고 — 출고와 대칭 구조. 로트번호는 입고 1건 단위로 하나(단일 입고와 동일 정책:
+  // 사용자가 말하지 않으면 오늘 날짜 자동)이며, 품목별로 다른 로트를 쓰려면 나눠서 입력한다.
+  interface MultiInboundPending {
+    items: { product: Product; quantity: number }[]
+    warehouse: Warehouse
+    lotNumber: string
+    date?: string
+  }
+  const [pendingMultiInbound, setPendingMultiInbound] = useState<MultiInboundPending | null>(null)
+
   useEffect(() => {
     const vv = window.visualViewport
     if (!vv) return
@@ -282,6 +292,7 @@ export default function ChatWidget() {
     setMessages(DEFAULT_CHAT_MESSAGES)
     setPendingAction(null)
     setPendingMultiAction(null)
+    setPendingMultiInbound(null)
     setPendingPartial(null)
     try {
       sessionStorage.removeItem(CHAT_MESSAGES_STORAGE_KEY) // 계정 구분 없던 구버전 키 정리
@@ -629,6 +640,125 @@ export default function ChatWidget() {
     setMessages(prev => [...prev, { role: 'assistant', content: summary }])
   }
 
+  // 다품목 입고 해석 — 출고(resolveMultiOutbound)와 같은 정책:
+  // 품목이 하나라도 모호하거나 없으면 전체를 보류하고 다시 말해달라고 한다(부분 실행 금지).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function resolveMultiInbound(data: any) {
+    if (profile?.role !== '창고') {
+      setMessages(prev => [...prev, { role: 'assistant', content: '입출고 기록은 창고 담당자만 등록할 수 있습니다.' }])
+      return
+    }
+
+    const items: { product_name: string; quantity: number }[] = data.items || []
+    const resolvedItems: { product: Product; quantity: number }[] = []
+    for (const it of items) {
+      const matches = products.filter(p =>
+        p.product_name.includes(it.product_name) || p.product_code.includes(it.product_name)
+      )
+      if (matches.length === 0) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `"${it.product_name}" 제품을 찾을 수 없습니다. 전체 요청을 다시 말씀해주세요.` }])
+        return
+      }
+      if (matches.length > 1) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `"${it.product_name}"에 해당하는 제품이 여러 개입니다. 정확한 제품명으로 다시 말씀해주세요.` }])
+        return
+      }
+      resolvedItems.push({ product: matches[0], quantity: it.quantity })
+    }
+
+    let warehouse: Warehouse | undefined
+    if (warehouses.length === 1) {
+      warehouse = warehouses[0]
+    } else if (data.warehouse) {
+      warehouse = warehouses.find(w => w.name.includes(data.warehouse))
+    }
+    if (!warehouse) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `어느 창고로 입고할까요?\n${warehouses.map((w, i) => `${i + 1}. ${w.name}`).join('\n')}`
+      }])
+      return
+    }
+
+    // 로트번호: 사용자가 명시하지 않으면 오늘 날짜 (단일 입고와 동일)
+    const lotNumber: string = data.lot_number || (() => {
+      const t = new Date()
+      return `${t.getFullYear().toString().slice(-2)}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}-01`
+    })()
+
+    const lines = resolvedItems.map(i => `- ${i.product.product_name} ${i.quantity.toLocaleString()}개`).join('\n')
+    setPendingMultiInbound({ items: resolvedItems, warehouse, lotNumber, date: data.date })
+    setMessages(prev => [...prev, {
+      role: 'assistant',
+      content: `다음 ${resolvedItems.length}개 품목을 ${warehouse!.name}에 입고합니다 (로트 ${lotNumber}).\n\n${lines}`
+    }])
+  }
+
+  async function runConfirmMultiInbound(pending: MultiInboundPending) {
+    const transactionDate = pending.date
+      ? (pending.date === getTodayISO()
+          ? new Date().toISOString()
+          : new Date(pending.date + 'T09:00:00').toISOString())
+      : new Date().toISOString()
+
+    const summaries: string[] = []
+    for (const { product, quantity } of pending.items) {
+      const { data: existingInv } = await supabase
+        .from('inventory')
+        .select('id, quantity')
+        .eq('product_id', product.id)
+        .eq('warehouse_id', pending.warehouse.id)
+        .eq('lot_number', pending.lotNumber)
+        .eq('stock_type', '일반')
+        .maybeSingle()
+
+      if (existingInv) {
+        const { error: invErr } = await supabase.from('inventory')
+          .update({ quantity: existingInv.quantity + quantity, updated_at: new Date().toISOString() })
+          .eq('id', existingInv.id)
+        if (invErr) console.error('재고 업데이트 실패:', invErr.message)
+      } else {
+        const { error: invErr } = await supabase.from('inventory').insert([{
+          product_id: product.id,
+          warehouse_id: pending.warehouse.id,
+          quantity,
+          lot_number: pending.lotNumber,
+          stock_type: '일반',
+          company_id: profile?.company_id
+        }])
+        if (invErr) console.error('재고 insert 실패:', invErr.message)
+      }
+
+      const { error: txError } = await supabase.from('transactions').insert([{
+        product_id: product.id,
+        warehouse_id: pending.warehouse.id,
+        type: '입고',
+        sub_type: null,
+        quantity,
+        lot_number: pending.lotNumber,
+        stock_type: '일반',
+        note: null,
+        recorded_by: profile?.name || 'AI',
+        created_at: transactionDate,
+        company_id: profile?.company_id
+      }])
+      if (txError) console.error('트랜잭션 저장 실패:', txError.message)
+
+      summaries.push(`${product.product_name} ${quantity.toLocaleString()}개`)
+    }
+
+    setMessages(prev => {
+      const next: Message[] = [...prev, {
+        role: 'assistant',
+        content: `입고 완료!\n\n${pending.warehouse.name} · 로트 ${pending.lotNumber}\n${summaries.map(s => `- ${s}`).join('\n')}`
+      }]
+      try { if (profile?.id) sessionStorage.setItem(`${CHAT_MESSAGES_STORAGE_KEY}:${profile.id}`, JSON.stringify(next)) } catch { /* quota 등 */ }
+      return next
+    })
+    setPendingMultiInbound(null)
+    window.location.reload()
+  }
+
   async function runConfirmMultiOutbound(pending: MultiOutboundPending) {
     const transactionDate = pending.date
       ? (pending.date === getTodayISO()
@@ -721,6 +851,7 @@ export default function ChatWidget() {
       return next
     })
     setPendingMultiAction(null)
+    setPendingMultiInbound(null)
     window.location.reload()
   }
 
@@ -968,12 +1099,26 @@ export default function ChatWidget() {
       // "출고" 키워드가 있고 원문에 등록된 제품이 실제로 2개 이상 + 수량과 함께 등장하면
       // GPT의 판단과 무관하게 프론트에서 다품목으로 확정 처리한다(안전망 — 지침 준수에만 의존 안 함).
       const isOutboundIntent = (userMessage.includes('출고') || userMessage.includes('반출')) && (data.action === '출고' || data.action === '질문')
-      const detectedItems = isOutboundIntent && !Array.isArray(data.items)
+      // 입고도 동일한 안전망 적용 — 프롬프트 지침만 믿으면 품목이 조용히 누락될 수 있어서,
+      // 원문을 직접 재스캔해 다품목 여부를 프론트에서 다시 확정한다 (출고와 대칭).
+      const isInboundIntent = userMessage.includes('입고') && (data.action === '입고' || data.action === '질문')
+      const detectedItems = (isOutboundIntent || isInboundIntent) && !Array.isArray(data.items)
         ? detectMultiItemsFromText(userMessage, products)
         : []
 
       if (data.action === '출고' && Array.isArray(data.items) && data.items.length > 0) {
         await resolveMultiOutbound(data)
+      } else if (data.action === '입고' && Array.isArray(data.items) && data.items.length > 0) {
+        await resolveMultiInbound(data)
+      } else if (detectedItems.length > 1 && isInboundIntent) {
+        // 다품목 입고 안전망: 창고는 GPT 응답이 놓쳤을 수 있으니 원문에서도 직접 찾는다
+        const detectedWarehouse = warehouses.find(w => userMessage.includes(w.name))
+        await resolveMultiInbound({
+          ...data,
+          action: '입고',
+          items: detectedItems,
+          warehouse: data.warehouse || detectedWarehouse?.name || null
+        })
       } else if (detectedItems.length > 1) {
         // 다품목 안전망을 탈 때는 GPT 응답의 channel/sub_type도 신뢰하기 어려우므로(품목조차
         // 놓친 응답이라 채널도 같이 놓쳤을 가능성이 높음), 원문에서 등록된 채널명을 직접 다시 찾는다.
@@ -1284,7 +1429,11 @@ export default function ChatWidget() {
   }
 
   async function handleConfirm() {
-    if (pendingMultiAction) {
+    if (pendingMultiInbound) {
+      setLoading(true)
+      await runConfirmMultiInbound(pendingMultiInbound)
+      setLoading(false)
+    } else if (pendingMultiAction) {
       setLoading(true)
       await runConfirmMultiOutbound(pendingMultiAction)
       setLoading(false)
@@ -1297,6 +1446,7 @@ export default function ChatWidget() {
     setPendingAction(null)
     setPendingPartial(null)
     setPendingMultiAction(null)
+    setPendingMultiInbound(null)
     setMessages(prev => [...prev, { role: 'assistant', content: '취소되었습니다.' }])
     setTimeout(() => inputRef.current?.focus(), 100)
   }
@@ -1356,7 +1506,7 @@ export default function ChatWidget() {
             )}
 
             {/* 재고 변경 확인 버튼 */}
-            {(pendingAction || pendingMultiAction) && !loading && (
+            {(pendingAction || pendingMultiAction || pendingMultiInbound) && !loading && (
               <div className="flex gap-2 pt-1">
                 <button
                   onClick={handleConfirm}
@@ -1378,7 +1528,7 @@ export default function ChatWidget() {
 
           {/* 입력 영역 */}
           <form ref={formRef} onSubmit={handleSubmit} className="p-3 border-t flex flex-col gap-1.5 shrink-0">
-            {(pendingAction || pendingMultiAction) && (
+            {(pendingAction || pendingMultiAction || pendingMultiInbound) && (
               <p className="text-xs text-center text-orange-500">위에서 확인 또는 취소를 눌러주세요</p>
             )}
             <div className="flex gap-2">
@@ -1389,11 +1539,11 @@ export default function ChatWidget() {
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="입고/출고 요청 입력..."
                 className="flex-1 border rounded-lg px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
-                disabled={loading || !!(pendingAction || pendingMultiAction)}
+                disabled={loading || !!(pendingAction || pendingMultiAction || pendingMultiInbound)}
               />
               <button
                 type="submit"
-                disabled={loading || !input.trim() || !!(pendingAction || pendingMultiAction)}
+                disabled={loading || !input.trim() || !!(pendingAction || pendingMultiAction || pendingMultiInbound)}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
                 전송
