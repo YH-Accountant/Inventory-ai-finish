@@ -90,6 +90,11 @@ export default function ExceptionsPage() {
   const [batchFile, setBatchFile] = useState<File | null>(null)
   const [batchShippingType, setBatchShippingType] = useState<typeof SHIPPING_TYPES[number] | ''>('')
   const [batchAttaching, setBatchAttaching] = useState(false)
+  // 입고 일괄 첨부 (거래명세서 1장 ↔ 여러 입고 건)
+  const [selectedInboundIds, setSelectedInboundIds] = useState<Set<string>>(new Set())
+  const [showBatchInbound, setShowBatchInbound] = useState(false)
+  const [batchInboundFile, setBatchInboundFile] = useState<File | null>(null)
+  const [batchInboundAttaching, setBatchInboundAttaching] = useState(false)
 
   useEffect(() => {
     if (!profile?.company_id) return
@@ -337,6 +342,63 @@ export default function ExceptionsPage() {
       else next.add(transactionId)
       return next
     })
+  }
+
+  // 입고 일괄 첨부 — 거래명세서 1장에 여러 품목이 적혀 오는 게 일반적이라 출고(집하확인서)와
+  // 같은 방식이 필요하다. 검증도 선택한 여러 건을 한 번에 넘겨 "품목+수량 같은 줄" 대조를 한다.
+  function toggleSelectInbound(transactionId: string) {
+    setSelectedInboundIds(prev => {
+      const next = new Set(prev)
+      if (next.has(transactionId)) next.delete(transactionId)
+      else next.add(transactionId)
+      return next
+    })
+  }
+
+  async function handleBatchInboundSubmit() {
+    if (!profile?.company_id || selectedInboundIds.size === 0) return
+    if (!batchInboundFile) {
+      alert('거래명세서 파일을 첨부해주세요.')
+      return
+    }
+    setBatchInboundAttaching(true)
+    try {
+      const ext = batchInboundFile.name.split('.').pop() || 'bin'
+      const path = `${profile.company_id}/batch-in-${Date.now()}.${ext}`
+      const { error: uploadError } = await supabase.storage.from('evidence').upload(path, batchInboundFile)
+      if (uploadError) {
+        alert('파일 업로드 실패: ' + uploadError.message)
+        return
+      }
+
+      const targets = evidenceExceptions.filter(e => selectedInboundIds.has(e.transaction_id))
+      const verify = await runEvidenceVerify(
+        '입고',
+        targets.map(t => ({ product_name: t.product_name, product_code: '', quantity: t.quantity })),
+        batchInboundFile
+      )
+      const results = await Promise.all(targets.map(t =>
+        supabase.from('transactions').update({
+          evidence_file_url: path,
+          evidence_quantity: t.quantity,
+          evidence_review_needed: !verify.verified,
+          evidence_review_reason: verify.verified ? null : verify.reason,
+          evidence_recorded_by: profile?.name || null
+        }).eq('id', t.transaction_id)
+      ))
+      const failed = results.find(r => r.error)
+      if (failed?.error) {
+        alert('일부 저장 실패: ' + failed.error.message)
+        return
+      }
+
+      setShowBatchInbound(false)
+      setBatchInboundFile(null)
+      setSelectedInboundIds(new Set())
+      load(profile.company_id)
+    } finally {
+      setBatchInboundAttaching(false)
+    }
   }
 
   async function handleBatchAttachSubmit() {
@@ -637,8 +699,43 @@ export default function ExceptionsPage() {
               </p>
             </div>
             <div className="p-3 md:p-6">
+              {selectedInboundIds.size > 0 && (
+                <div className="mb-3 flex items-center justify-between flex-wrap gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                  <span className="text-sm text-blue-700">입고 {selectedInboundIds.size}건 선택됨 — 거래명세서 1장에 여러 품목이 적혀 있으면 파일 하나로 일괄 첨부하세요.</span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setSelectedInboundIds(new Set())} className="text-xs text-gray-500 hover:underline">선택 해제</button>
+                    <button
+                      onClick={() => setShowBatchInbound(!showBatchInbound)}
+                      className="text-xs bg-blue-600 text-white px-2.5 py-1.5 rounded-lg hover:bg-blue-700 transition"
+                    >
+                      {showBatchInbound ? '취소' : '일괄 증빙 첨부'}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {showBatchInbound && selectedInboundIds.size > 0 && (
+                <div className="mb-3 bg-gray-50 rounded-lg p-3 flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">거래명세서 파일 (선택 {selectedInboundIds.size}건 공통)</label>
+                    <input
+                      type="file"
+                      accept="image/*,application/pdf"
+                      onChange={(ev) => setBatchInboundFile(ev.target.files?.[0] || null)}
+                      className="text-sm"
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 basis-full">각 건의 증빙수량은 실물 입고수량과 동일하게 자동 저장됩니다. 명세서에서 선택한 품목·수량이 모두 확인돼야 통과합니다.</p>
+                  <button
+                    onClick={handleBatchInboundSubmit}
+                    disabled={batchInboundAttaching}
+                    className="bg-green-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
+                  >
+                    {batchInboundAttaching ? '저장 중...' : '저장'}
+                  </button>
+                </div>
+              )}
               {selectedOutboundIds.size > 0 && (
-                <div className="mb-3 flex items-center justify-between bg-purple-50 border border-purple-200 rounded-lg px-3 py-2">
+                <div className="mb-3 flex items-center justify-between flex-wrap gap-2 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2">
                   <span className="text-sm text-purple-700">출고 {selectedOutboundIds.size}건 선택됨 — 같은 운송장(집하) 한 번에 나간 여러 품목이면 파일 하나로 일괄 첨부하세요.</span>
                   <div className="flex items-center gap-2">
                     <button onClick={() => setSelectedOutboundIds(new Set())} className="text-xs text-gray-500 hover:underline">선택 해제</button>
@@ -695,11 +792,18 @@ export default function ExceptionsPage() {
                     <div key={e.transaction_id} className="border-b py-2">
                       <div className="flex items-center justify-between flex-wrap gap-2">
                         <div className="flex items-center gap-2">
-                          {e.source === '출고' && (
+                          {e.source === '출고' ? (
                             <input
                               type="checkbox"
                               checked={selectedOutboundIds.has(e.transaction_id)}
                               onChange={() => toggleSelectOutbound(e.transaction_id)}
+                              className="shrink-0"
+                            />
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={selectedInboundIds.has(e.transaction_id)}
+                              onChange={() => toggleSelectInbound(e.transaction_id)}
                               className="shrink-0"
                             />
                           )}

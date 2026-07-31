@@ -119,6 +119,19 @@ function resolveRegisteredRecipient(
 // 최장 공통 부분문자열(3글자 이상)로 후보를 찾아 "혹시 이 제품인가요?"로 제안한다.
 // 자동 확정은 절대 안 함(오타 추측으로 엉뚱한 품목이 출고되는 게 못 찾는 것보다 위험) —
 // 반드시 사용자가 번호로 선택해야 진행.
+// 제품 매칭은 항상 공백을 지우고 비교한다. 사용자는 "테스트립밤"처럼 붙여 쓰는데
+// 등록명은 "테스트 립밤"이라 공백 하나 때문에 못 찾는 일이 실제로 발생했다.
+// (발주확인서·증빙 검증 서버에서 쓰는 normalizeForMatch와 같은 원리)
+function squash(s: string): string {
+  return (s || '').replace(/\s+/g, '').toUpperCase()
+}
+
+function productMatches(p: { product_name: string; product_code: string }, keyword: string): boolean {
+  const k = squash(keyword)
+  if (!k) return false
+  return squash(p.product_name).includes(k) || squash(p.product_code).includes(k)
+}
+
 function longestCommonSubstringLen(a: string, b: string): number {
   let max = 0
   const dp = new Array(b.length + 1).fill(0)
@@ -172,7 +185,7 @@ function detectMultiItemsFromText(
     const keyword = match[1]
     const quantity = parseInt(match[2], 10)
     const product = products.find(p =>
-      p.product_name.includes(keyword) || p.product_code.toUpperCase().includes(keyword.toUpperCase())
+      productMatches(p, keyword)
     )
     if (product) found.push({ product_name: product.product_name, quantity, index: match.index })
   }
@@ -557,7 +570,7 @@ export default function ChatWidget() {
     const resolvedItems: { product: Product; quantity: number }[] = []
     for (const it of items) {
       const matches = products.filter(p =>
-        p.product_name.includes(it.product_name) || p.product_code.includes(it.product_name)
+        productMatches(p, it.product_name)
       )
       if (matches.length === 0) {
         setMessages(prev => [...prev, { role: 'assistant', content: `"${it.product_name}" 제품을 찾을 수 없습니다. 전체 요청을 다시 말씀해주세요.` }])
@@ -653,7 +666,7 @@ export default function ChatWidget() {
     const resolvedItems: { product: Product; quantity: number }[] = []
     for (const it of items) {
       const matches = products.filter(p =>
-        p.product_name.includes(it.product_name) || p.product_code.includes(it.product_name)
+        productMatches(p, it.product_name)
       )
       if (matches.length === 0) {
         setMessages(prev => [...prev, { role: 'assistant', content: `"${it.product_name}" 제품을 찾을 수 없습니다. 전체 요청을 다시 말씀해주세요.` }])
@@ -924,7 +937,7 @@ export default function ChatWidget() {
 
     const keyword = data.product_name || ''
     const matched = products.filter(p =>
-      p.product_name.includes(keyword) || p.product_code.includes(keyword)
+      productMatches(p, keyword)
     )
 
     if (matched.length === 0) {
@@ -974,7 +987,7 @@ export default function ChatWidget() {
       if (!isNaN(num) && num >= 1 && num <= choices.length) {
         selected = choices[num - 1]
       } else {
-        selected = choices.find(p => p.product_name.includes(userMessage))
+        selected = choices.find(p => productMatches(p, userMessage))
       }
       if (!selected) {
         setMessages(prev => [...prev, {
@@ -1188,8 +1201,7 @@ export default function ChatWidget() {
 
     try {
       const product = products.find(p =>
-        p.product_name.includes(pendingAction.product_name || '') ||
-        p.product_code.includes(pendingAction.product_name || '')
+        productMatches(p, pendingAction.product_name || '')
       )
 
       if (!product) {

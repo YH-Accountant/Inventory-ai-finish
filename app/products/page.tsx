@@ -51,6 +51,7 @@ export default function ProductsPage() {
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [bulkApplying, setBulkApplying] = useState(false)
   const [setItems, setSetItems] = useState<SetItem[]>([])
+  const [search, setSearch] = useState('')
 
   const [formData, setFormData] = useState({
     product_group: '',
@@ -163,8 +164,12 @@ export default function ProductsPage() {
     fetchProducts()
   }
 
-  // 제품군별 그룹핑
-  const grouped = products.reduce<Record<string, Product[]>>((acc, p) => {
+  // 검색(제품명·품번, 공백 무시) 후 제품군별 그룹핑
+  const squash = (s: string) => (s || '').replace(/\s+/g, '').toLowerCase()
+  const visibleProducts = search
+    ? products.filter(p => squash(p.product_name).includes(squash(search)) || squash(p.product_code).includes(squash(search)))
+    : products
+  const grouped = visibleProducts.reduce<Record<string, Product[]>>((acc, p) => {
     const g = p.product_group || '(제품군 없음)'
     if (!acc[g]) acc[g] = []
     acc[g].push(p)
@@ -186,9 +191,20 @@ export default function ProductsPage() {
         <div className="flex flex-wrap justify-between items-start gap-3 mb-6">
           <div>
             <h1 className="text-xl font-bold text-gray-900">제품 관리</h1>
-            <p className="text-xs text-gray-400 mt-0.5">총 {products.length}개 · {groupNames.length}개 제품군</p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {search
+                ? `검색 ${visibleProducts.length}개 / 총 ${products.length}개`
+                : `총 ${products.length}개 · ${groupNames.length}개 제품군`}
+            </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <input
+              type="text"
+              placeholder="제품명·품번 검색..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-40 md:w-48"
+            />
             <button
               onClick={() => setShowForm(!showForm)}
               className="bg-blue-600 text-white px-3 py-1.5 md:px-5 md:py-2 text-sm rounded-lg hover:bg-blue-700 transition"
