@@ -33,6 +33,15 @@ interface BulkPreview {
   excluded: Product[]  // 키워드로 보호된 항목 (bulk OFF 시에만 발생)
 }
 
+// 기획세트 구성(BOM): 세트 1개를 만드는 데 필요한 구성품과 소요 수량.
+// 수량만 다루고 원가·마진은 다루지 않는다(019에서 제거한 기획관리와의 차이).
+interface SetItem {
+  id: string
+  set_product_id: string
+  component_product_id: string
+  quantity: number
+}
+
 export default function ProductsPage() {
   const { profile } = useAuth()
   const [products, setProducts] = useState<Product[]>([])
@@ -41,6 +50,8 @@ export default function ProductsPage() {
   const [editingCost, setEditingCost] = useState<{ id: string; value: string } | null>(null)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [bulkApplying, setBulkApplying] = useState(false)
+  const [setItems, setSetItems] = useState<SetItem[]>([])
+  const [search, setSearch] = useState('')
 
   const [formData, setFormData] = useState({
     product_group: '',
@@ -75,6 +86,13 @@ export default function ProductsPage() {
       .order('product_group', { ascending: true })
     setProducts(data || [])
     setLoading(false)
+
+    // 세트 배지 표시용 (구성 정의·생산은 입출고 기록의 '세트 생산'에서 함)
+    const { data: setData } = await supabase
+      .from('product_set_items')
+      .select('id, set_product_id, component_product_id, quantity')
+      .eq('company_id', profile.company_id)
+    setSetItems(setData || [])
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -146,8 +164,12 @@ export default function ProductsPage() {
     fetchProducts()
   }
 
-  // 제품군별 그룹핑
-  const grouped = products.reduce<Record<string, Product[]>>((acc, p) => {
+  // 검색(제품명·품번, 공백 무시) 후 제품군별 그룹핑
+  const squash = (s: string) => (s || '').replace(/\s+/g, '').toLowerCase()
+  const visibleProducts = search
+    ? products.filter(p => squash(p.product_name).includes(squash(search)) || squash(p.product_code).includes(squash(search)))
+    : products
+  const grouped = visibleProducts.reduce<Record<string, Product[]>>((acc, p) => {
     const g = p.product_group || '(제품군 없음)'
     if (!acc[g]) acc[g] = []
     acc[g].push(p)
@@ -169,14 +191,27 @@ export default function ProductsPage() {
         <div className="flex flex-wrap justify-between items-start gap-3 mb-6">
           <div>
             <h1 className="text-xl font-bold text-gray-900">제품 관리</h1>
-            <p className="text-xs text-gray-400 mt-0.5">총 {products.length}개 · {groupNames.length}개 제품군</p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {search
+                ? `검색 ${visibleProducts.length}개 / 총 ${products.length}개`
+                : `총 ${products.length}개 · ${groupNames.length}개 제품군`}
+            </p>
           </div>
-          <button
-            onClick={() => setShowForm(!showForm)}
-            className="bg-blue-600 text-white px-3 py-1.5 md:px-5 md:py-2 text-sm rounded-lg hover:bg-blue-700 transition shrink-0"
-          >
-            {showForm ? '취소' : '+ 제품 등록'}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <input
+              type="text"
+              placeholder="제품명·품번 검색..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-40 md:w-48"
+            />
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="bg-blue-600 text-white px-3 py-1.5 md:px-5 md:py-2 text-sm rounded-lg hover:bg-blue-700 transition"
+            >
+              {showForm ? '취소' : '+ 제품 등록'}
+            </button>
+          </div>
         </div>
 
         {/* 등록 폼 */}
@@ -215,8 +250,8 @@ export default function ProductsPage() {
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="일반">일반</option>
+                  <option value="올리브영">올리브영</option>
                   <option value="홈쇼핑용">홈쇼핑용</option>
-                  <option value="라이브커머스용">라이브커머스용</option>
                 </select>
               </div>
               <div>
@@ -489,6 +524,9 @@ export default function ProductsPage() {
                           <td className="py-2.5 pl-4 pr-2 text-sm font-medium text-gray-900 overflow-hidden">
                             <span className="flex items-center gap-1">
                               <span className="truncate">{product.product_name}</span>
+                              {setItems.some(s => s.set_product_id === product.id) && (
+                                <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded shrink-0" title="구성이 정의된 기획세트">세트</span>
+                              )}
                               {hasSetKeyword(product.product_name) && (
                                 <span className="text-orange-400 text-xs shrink-0" title="세트/기획 가능성 — 일괄 OFF 자동 제외">⚠</span>
                               )}
@@ -498,8 +536,9 @@ export default function ProductsPage() {
                           <td className="py-2.5 px-2">
                             <span className={`px-2 py-0.5 rounded text-xs ${
                               product.version === '홈쇼핑용' ? 'bg-purple-100 text-purple-800' :
-                              product.version === '라이브커머스용' ? 'bg-orange-100 text-orange-800' :
-                              'bg-gray-100 text-gray-700'
+                              product.version === '올리브영' ? 'bg-green-100 text-green-800' :
+                              product.version === '일반' ? 'bg-gray-100 text-gray-700' :
+                              'bg-orange-100 text-orange-800'
                             }`}>
                               {product.version}
                             </span>
