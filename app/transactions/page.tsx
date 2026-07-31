@@ -13,6 +13,14 @@ interface Product {
   shelf_life_months: number | null
 }
 
+// 기획세트 구성(BOM) — 제품 관리에서 정의, 여기서는 조립 실행에만 사용
+interface SetItem {
+  id: string
+  set_product_id: string
+  component_product_id: string
+  quantity: number
+}
+
 interface Warehouse {
   id: string
   name: string
@@ -95,6 +103,7 @@ export default function TransactionsPage() {
   })
   const [returnPhoto, setReturnPhoto] = useState<File | null>(null)
   const [returnSourceOptions, setReturnSourceOptions] = useState<ReturnSourceOption[]>([])
+  const [setItems, setSetItems] = useState<SetItem[]>([])
 
   // 로트번호 형식 검증 (YYMMDD-NN)
   function isValidLotNumber(lot: string): boolean {
@@ -129,6 +138,33 @@ export default function TransactionsPage() {
     expiry.setMonth(expiry.getMonth() + shelfLifeMonths)
     const days = Math.ceil((expiry.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
     return days <= shelfLifeMonths * 30 * 0.25
+  }
+
+  // ── 기획세트 조립(BOM) 보조 함수 ──
+  // 로트번호(YYMMDD-NN) → 만료일. 형식이 아니면 null
+  function lotExpiryDate(lotNumber: string | null, shelfLifeMonths: number): Date | null {
+    if (!lotNumber || !/^\d{6}-\d{2}$/.test(lotNumber)) return null
+    const y = parseInt('20' + lotNumber.substring(0, 2))
+    const m = parseInt(lotNumber.substring(2, 4)) - 1
+    const d = parseInt(lotNumber.substring(4, 6))
+    const expiry = new Date(y, m, d)
+    expiry.setMonth(expiry.getMonth() + shelfLifeMonths)
+    return expiry
+  }
+
+  // 만료/임박 판정 (출고 FIFO와 동일 기준: 잔여 유통기한 25% 이하)
+  function isLotExpiringOrExpired(lotNumber: string | null, shelfLifeMonths: number): boolean {
+    const expiry = lotExpiryDate(lotNumber, shelfLifeMonths)
+    if (!expiry) return false
+    const days = Math.ceil((expiry.getTime() - new Date().getTime()) / 86400000)
+    return days <= shelfLifeMonths * 30 * 0.25
+  }
+
+  function dateToLotNumber(d: Date): string {
+    const yy = String(d.getFullYear()).slice(-2)
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${yy}${mm}${dd}-01`
   }
 
   // 오늘 날짜로 로트번호 기본값 생성
@@ -227,6 +263,12 @@ export default function TransactionsPage() {
       .order('created_at', { ascending: false })
       .limit(50)
 
+    const { data: setItemsData } = await supabase
+      .from('product_set_items')
+      .select('id, set_product_id, component_product_id, quantity')
+      .eq('company_id', cid)
+
+    setSetItems(setItemsData || [])
     setProducts(productsData || [])
     setWarehouses(warehousesData || [])
     setChannels(channelsData || [])
@@ -288,7 +330,154 @@ export default function TransactionsPage() {
       ? new Date(formData.transaction_date + 'T09:00:00').toISOString()
       : new Date().toISOString()
 
-    if (formData.type === '조정') {
+    if (formData.type === '조립') {
+      // ── 기획세트 조립: 구성품 차감 + 세트 입고를 한 번에 ──
+      // 대사 영향 없음: reconcile은 type='입고'/'출고'만 조회하므로 type='조립'은 애초에 대상이 아니다.
+      // (조정으로 우회하던 방식과 결과는 같되, "이 구성품이 저 세트가 됐다"는 추적이 남는다)
+      const components = setItems.filter(s => s.set_product_id === formData.product_id)
+      if (components.length === 0) {
+        alert('구성이 정의되지 않은 제품입니다.\n제품 관리 > 세트 구성에서 먼저 구성품을 등록해주세요.')
+        return
+      }
+      const setQty = formData.quantity
+      const setProduct = products.find(p => p.id === formData.product_id)
+
+      // 1) 구성품별 소진 계획 수립 + 재고 검증 (하나라도 부족하면 전체 취소 — 부분 조립 금지)
+      interface TakePlan { lotId: string; lotNumber: string | null; take: number; newQty: number }
+      interface ComponentPlan { productId: string; name: string; needed: number; shelfLife: number; takes: TakePlan[] }
+      const plans: ComponentPlan[] = []
+      const shortages: string[] = []
+
+      for (const c of components) {
+        const comp = products.find(p => p.id === c.component_product_id)
+        const shelfLife = comp?.shelf_life_months || 24
+        const needed = c.quantity * setQty
+        const { data: lots } = await supabase
+          .from('inventory')
+          .select('id, quantity, lot_number, stock_type')
+          .eq('product_id', c.component_product_id)
+          .eq('warehouse_id', formData.warehouse_id)
+          .gt('quantity', 0)
+
+        // 출고와 동일 기준: 만료·임박·반품격리 로트는 조립에도 쓰지 않는다
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const eligible = (lots || [])
+          .filter((l: any) => l.stock_type !== '반품격리' && !isLotExpiringOrExpired(l.lot_number, shelfLife))
+          .sort((a: any, b: any) => (a.lot_number || '').localeCompare(b.lot_number || ''))
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const available = eligible.reduce((s: number, l: any) => s + l.quantity, 0)
+        if (available < needed) {
+          shortages.push(`· ${comp?.product_name || '(제품 미상)'}: 필요 ${needed.toLocaleString()}개 / 가용 ${available.toLocaleString()}개`)
+          continue
+        }
+
+        let remaining = needed
+        const takes: TakePlan[] = []
+        for (const lot of eligible) {
+          if (remaining <= 0) break
+          const take = Math.min(lot.quantity, remaining)
+          takes.push({ lotId: lot.id, lotNumber: lot.lot_number, take, newQty: lot.quantity - take })
+          remaining -= take
+        }
+        plans.push({ productId: c.component_product_id, name: comp?.product_name || '', needed, shelfLife, takes })
+      }
+
+      if (shortages.length > 0) {
+        alert(`구성품 재고가 부족해 조립할 수 없습니다.\n(만료·임박·반품격리 로트 제외)\n\n${shortages.join('\n')}`)
+        return
+      }
+
+      // 2) 세트 로트의 유통기한 상속 — 소진된 구성품 중 "가장 빨리 만료되는 것"을 세트 만료일로 삼는다.
+      //    이렇게 하지 않으면 임박 재고를 세트로 조립하는 순간 유통기한이 리셋되는 세탁이 가능해진다.
+      let earliestExpiry: Date | null = null
+      for (const p of plans) {
+        for (const t of p.takes) {
+          const e = lotExpiryDate(t.lotNumber, p.shelfLife)
+          if (e && (!earliestExpiry || e < earliestExpiry)) earliestExpiry = e
+        }
+      }
+      const setShelfLife = setProduct?.shelf_life_months || 24
+      let setLot = generateDefaultLotNumber()
+      if (earliestExpiry) {
+        const backDated = new Date(earliestExpiry)
+        backDated.setMonth(backDated.getMonth() - setShelfLife)
+        setLot = dateToLotNumber(backDated)
+      }
+
+      // 3) 실행 — 구성품 차감
+      const consumedSummary: string[] = []
+      for (const p of plans) {
+        for (const t of p.takes) {
+          if (t.newQty <= 0) {
+            await supabase.from('inventory').delete().eq('id', t.lotId)
+          } else {
+            await supabase.from('inventory').update({ quantity: t.newQty, updated_at: new Date().toISOString() }).eq('id', t.lotId)
+          }
+        }
+        const lotDetail = p.takes.map(t => `${t.lotNumber} ${t.take.toLocaleString()}개`).join(' / ')
+        const afterQty = await getTotalInventory(p.productId, formData.warehouse_id)
+        const { error: compError } = await supabase.from('transactions').insert([{
+          product_id: p.productId,
+          warehouse_id: formData.warehouse_id,
+          type: '조립',
+          sub_type: null,
+          quantity: -p.needed,
+          resulting_quantity: afterQty,
+          channel: null,
+          note: `[조립] ${setProduct?.product_name || ''} ${setQty.toLocaleString()}개 조립에 소진 | [로트] ${lotDetail}`,
+          recorded_by: profile?.name || null,
+          created_at: transactionDate,
+          company_id: profile?.company_id
+        }])
+        if (compError) { alert('구성품 차감 기록 실패: ' + compError.message); return }
+        consumedSummary.push(`${p.name} ${p.needed.toLocaleString()}개`)
+      }
+
+      // 4) 실행 — 세트 입고
+      const { data: existingSetLot } = await supabase
+        .from('inventory')
+        .select('*')
+        .eq('product_id', formData.product_id)
+        .eq('warehouse_id', formData.warehouse_id)
+        .eq('lot_number', setLot)
+        .eq('stock_type', '일반')
+        .maybeSingle()
+
+      if (existingSetLot) {
+        await supabase.from('inventory')
+          .update({ quantity: existingSetLot.quantity + setQty, updated_at: new Date().toISOString() })
+          .eq('id', existingSetLot.id)
+      } else {
+        await supabase.from('inventory').insert([{
+          product_id: formData.product_id,
+          warehouse_id: formData.warehouse_id,
+          quantity: setQty,
+          lot_number: setLot,
+          stock_type: '일반',
+          company_id: profile?.company_id
+        }])
+      }
+
+      const setAfterQty = await getTotalInventory(formData.product_id, formData.warehouse_id)
+      const { error: setError } = await supabase.from('transactions').insert([{
+        product_id: formData.product_id,
+        warehouse_id: formData.warehouse_id,
+        type: '조립',
+        sub_type: null,
+        quantity: setQty,
+        resulting_quantity: setAfterQty,
+        channel: null,
+        note: `[조립] 세트 생성 (로트 ${setLot}${earliestExpiry ? ' · 구성품 최단 유통기한 상속' : ''}) | 소진: ${consumedSummary.join(', ')}`,
+        recorded_by: profile?.name || null,
+        created_at: transactionDate,
+        company_id: profile?.company_id
+      }])
+      if (setError) { alert('세트 입고 기록 실패: ' + setError.message); return }
+
+      alert(`조립 완료!\n\n${setProduct?.product_name || ''} ${setQty.toLocaleString()}개 (로트 ${setLot})\n소진: ${consumedSummary.join(', ')}`)
+
+    } else if (formData.type === '조정') {
       // ── 조정 처리 ──
       const targetQty = formData.quantity
       const currentTotal = await getTotalInventory(formData.product_id, formData.warehouse_id)
@@ -581,6 +770,12 @@ export default function TransactionsPage() {
   }
 
   async function handleDelete(tx: Transaction) {
+    // 조립은 구성품 차감과 세트 입고가 짝을 이루므로 한 행만 지우면 재고가 어긋난다.
+    // 되돌리려면 반대 방향 조립을 하거나 실사 조정으로 맞춘다.
+    if (tx.type === '조립') {
+      alert('조립 기록은 개별 삭제할 수 없습니다.\n구성품 차감과 세트 입고가 짝을 이루기 때문입니다.\n\n재고를 되돌리려면 실사 조정을 사용해주세요.')
+      return
+    }
     const confirmMsg = `정말 삭제하시겠습니까?\n\n${tx.type}: ${tx.products?.product_name} ${tx.quantity.toLocaleString()}개\n\n삭제 시 재고가 자동으로 복원됩니다.`
 
     if (!confirm(confirmMsg)) return
@@ -805,11 +1000,67 @@ export default function TransactionsPage() {
                     />
                     <span className="text-orange-600 font-medium">조정 (실사)</span>
                   </label>
+                  {setItems.length > 0 && (
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        value="조립"
+                        checked={formData.type === '조립'}
+                        onChange={(e) => setFormData({...formData, type: e.target.value, sub_type: '', product_id: '', quantity: 0})}
+                        className="mr-2"
+                      />
+                      <span className="text-indigo-600 font-medium">조립 (세트)</span>
+                    </label>
+                  )}
                 </div>
                 {formData.type === '조정' && (
                   <p className="text-xs text-orange-500 mt-1">실사 후 실제 수량을 입력하면 자동으로 차이를 조정합니다.</p>
                 )}
+                {formData.type === '조립' && (
+                  <p className="text-xs text-indigo-500 mt-1">구성품을 차감하고 세트를 입고합니다. 구성품이 하나라도 부족하면 전체가 취소됩니다.</p>
+                )}
               </div>
+
+              {/* 조립: 세트 제품 선택 + 필요 구성품 미리보기 */}
+              {formData.type === '조립' && (
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">세트 제품 *</label>
+                  <select
+                    required
+                    value={formData.product_id}
+                    onChange={(e) => setFormData({...formData, product_id: e.target.value})}
+                    className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="">구성이 정의된 세트를 선택하세요</option>
+                    {products
+                      .filter(p => setItems.some(s => s.set_product_id === p.id))
+                      .map(p => <option key={p.id} value={p.id}>{p.product_name} ({p.product_code})</option>)}
+                  </select>
+                  {formData.product_id && (
+                    <div className="mt-2 bg-indigo-50 border border-indigo-100 rounded-lg p-3">
+                      <p className="text-xs font-medium text-indigo-800 mb-1.5">
+                        세트 1개당 구성 {formData.quantity > 0 && `· ${formData.quantity.toLocaleString()}개 조립 시 필요량`}
+                      </p>
+                      <div className="space-y-0.5">
+                        {setItems.filter(s => s.set_product_id === formData.product_id).map(s => {
+                          const comp = products.find(p => p.id === s.component_product_id)
+                          return (
+                            <p key={s.id} className="text-xs text-indigo-700">
+                              · {comp?.product_name || '(제품 미상)'} × {s.quantity}
+                              {formData.quantity > 0 && (
+                                <span className="font-semibold ml-1">→ {(s.quantity * formData.quantity).toLocaleString()}개</span>
+                              )}
+                            </p>
+                          )
+                        })}
+                      </div>
+                      <p className="text-[11px] text-indigo-400 mt-1.5">
+                        * 만료·임박·반품격리 로트는 조립에 사용하지 않으며, 세트의 유통기한은 소진된 구성품 중 가장 짧은 것을 따릅니다.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
               {formData.type === '출고' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -886,13 +1137,13 @@ export default function TransactionsPage() {
               )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {formData.type === '조정' ? '목표 수량 (실사 결과) *' : '수량 *'}
+                  {formData.type === '조정' ? '목표 수량 (실사 결과) *' : formData.type === '조립' ? '조립할 세트 수량 *' : '수량 *'}
                 </label>
                 <input
                   type="number"
                   required
                   min={formData.type === '조정' ? '0' : '1'}
-                  placeholder={formData.type === '조정' ? '실사 후 실제 수량 입력' : '예: 500'}
+                  placeholder={formData.type === '조정' ? '실사 후 실제 수량 입력' : formData.type === '조립' ? '예: 100 (세트 개수)' : '예: 500'}
                   value={formData.quantity || ''}
                   onChange={(e) => setFormData({...formData, quantity: Number(e.target.value)})}
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
@@ -914,24 +1165,26 @@ export default function TransactionsPage() {
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  제품 *
-                </label>
-                <select
-                  required
-                  value={formData.product_id}
-                  onChange={(e) => setFormData({...formData, product_id: e.target.value})}
-                  className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
-                >
-                  <option value="">제품 선택</option>
-                  {products.map((product) => (
-                    <option key={product.id} value={product.id}>
-                      {product.product_name} ({product.product_code})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {formData.type !== '조립' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    제품 *
+                  </label>
+                  <select
+                    required
+                    value={formData.product_id}
+                    onChange={(e) => setFormData({...formData, product_id: e.target.value})}
+                    className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500"
+                  >
+                    <option value="">제품 선택</option>
+                    {products.map((product) => (
+                      <option key={product.id} value={product.id}>
+                        {product.product_name} ({product.product_code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   창고 *
@@ -1101,10 +1354,12 @@ export default function TransactionsPage() {
                       ? 'bg-green-600 hover:bg-green-700'
                       : formData.type === '출고'
                       ? 'bg-red-600 hover:bg-red-700'
+                      : formData.type === '조립'
+                      ? 'bg-indigo-600 hover:bg-indigo-700'
                       : 'bg-blue-600 hover:bg-blue-700'
                   }`}
                 >
-                  {formData.type === '입고' ? '입고 등록' : formData.type === '출고' ? '출고 등록' : '조정 등록'}
+                  {formData.type === '입고' ? '입고 등록' : formData.type === '출고' ? '출고 등록' : formData.type === '조립' ? '조립 실행' : '조정 등록'}
                 </button>
               </div>
             </form>
@@ -1150,6 +1405,8 @@ export default function TransactionsPage() {
                       <span className={`px-2 py-0.5 rounded text-xs font-medium shrink-0 text-center leading-tight ${
                         isTransfer
                           ? 'bg-blue-100 text-blue-800'
+                          : tx.type === '조립'
+                          ? 'bg-indigo-100 text-indigo-800'
                           : tx.type === '입고'
                           ? 'bg-green-100 text-green-800'
                           : tx.type === '조정'
@@ -1216,13 +1473,17 @@ export default function TransactionsPage() {
                         <p className={`font-semibold text-sm ${
                           isTransfer
                             ? 'text-blue-600'
-                            : tx.type === '입고'
+                            : tx.type === '조립'
+                              ? 'text-indigo-600'
+                              : tx.type === '입고'
                               ? 'text-green-600'
                               : tx.type === '조정'
                               ? 'text-orange-600'
                               : 'text-red-600'
                         }`}>
-                          {isTransfer ? '↔' : tx.type === '입고' ? '+' : tx.type === '조정' ? (tx.quantity >= 0 ? '+' : '') : '-'}{tx.quantity.toLocaleString()}개
+                          {/* 조립은 구성품(음수)·세트(양수)가 한 유형에 섞여 있어 부호를 수량에서 직접 읽는다 */}
+                          {isTransfer ? '↔' : tx.type === '조립' ? (tx.quantity < 0 ? '-' : '+') : tx.type === '입고' ? '+' : tx.type === '조정' ? (tx.quantity >= 0 ? '+' : '') : '-'}
+                          {(tx.type === '조립' ? Math.abs(tx.quantity) : tx.quantity).toLocaleString()}개
                         </p>
                         {tx.resulting_quantity !== null && tx.resulting_quantity !== undefined && (
                           <p className="text-xs text-gray-400">잔액 {tx.resulting_quantity.toLocaleString()}개</p>

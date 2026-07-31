@@ -33,6 +33,15 @@ interface BulkPreview {
   excluded: Product[]  // 키워드로 보호된 항목 (bulk OFF 시에만 발생)
 }
 
+// 기획세트 구성(BOM): 세트 1개를 만드는 데 필요한 구성품과 소요 수량.
+// 수량만 다루고 원가·마진은 다루지 않는다(019에서 제거한 기획관리와의 차이).
+interface SetItem {
+  id: string
+  set_product_id: string
+  component_product_id: string
+  quantity: number
+}
+
 export default function ProductsPage() {
   const { profile } = useAuth()
   const [products, setProducts] = useState<Product[]>([])
@@ -41,6 +50,10 @@ export default function ProductsPage() {
   const [editingCost, setEditingCost] = useState<{ id: string; value: string } | null>(null)
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null)
   const [bulkApplying, setBulkApplying] = useState(false)
+  const [setItems, setSetItems] = useState<SetItem[]>([])
+  const [showSetModal, setShowSetModal] = useState(false)
+  const [selectedSetId, setSelectedSetId] = useState('')
+  const [componentForm, setComponentForm] = useState({ product_id: '', quantity: 1 })
 
   const [formData, setFormData] = useState({
     product_group: '',
@@ -75,6 +88,49 @@ export default function ProductsPage() {
       .order('product_group', { ascending: true })
     setProducts(data || [])
     setLoading(false)
+    fetchSetItems()
+  }
+
+  // ── 기획세트 구성(BOM) ──
+  async function fetchSetItems() {
+    if (!profile?.company_id) return
+    const { data } = await supabase
+      .from('product_set_items')
+      .select('id, set_product_id, component_product_id, quantity')
+      .eq('company_id', profile.company_id)
+    setSetItems(data || [])
+  }
+
+  async function addComponent(e: React.FormEvent) {
+    e.preventDefault()
+    if (!selectedSetId || !componentForm.product_id || componentForm.quantity < 1) return
+    if (selectedSetId === componentForm.product_id) {
+      alert('세트 자기 자신을 구성품으로 넣을 수 없습니다.')
+      return
+    }
+    // 구성품이 또 다른 세트면 조립 시 중첩 차감이 필요해져 범위를 벗어난다 (1단계 구성만 지원)
+    if (setItems.some(s => s.set_product_id === componentForm.product_id)) {
+      alert('구성품으로 다른 세트를 넣을 수 없습니다. (1단계 구성만 지원)')
+      return
+    }
+    const { error } = await supabase.from('product_set_items').insert([{
+      company_id: profile?.company_id,
+      set_product_id: selectedSetId,
+      component_product_id: componentForm.product_id,
+      quantity: componentForm.quantity
+    }])
+    if (error) {
+      alert(error.message.includes('duplicate') ? '이미 등록된 구성품입니다.' : '등록 실패: ' + error.message)
+      return
+    }
+    setComponentForm({ product_id: '', quantity: 1 })
+    fetchSetItems()
+  }
+
+  async function removeComponent(id: string) {
+    const { error } = await supabase.from('product_set_items').delete().eq('id', id)
+    if (error) { alert('삭제 실패: ' + error.message); return }
+    fetchSetItems()
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -171,13 +227,102 @@ export default function ProductsPage() {
             <h1 className="text-xl font-bold text-gray-900">제품 관리</h1>
             <p className="text-xs text-gray-400 mt-0.5">총 {products.length}개 · {groupNames.length}개 제품군</p>
           </div>
-          <button
-            onClick={() => setShowForm(!showForm)}
-            className="bg-blue-600 text-white px-3 py-1.5 md:px-5 md:py-2 text-sm rounded-lg hover:bg-blue-700 transition shrink-0"
-          >
-            {showForm ? '취소' : '+ 제품 등록'}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => { setShowSetModal(true); setSelectedSetId(''); setComponentForm({ product_id: '', quantity: 1 }) }}
+              className="bg-white border border-gray-300 text-gray-700 px-3 py-1.5 md:px-4 md:py-2 text-sm rounded-lg hover:bg-gray-50 transition"
+            >
+              🧩 세트 구성
+            </button>
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="bg-blue-600 text-white px-3 py-1.5 md:px-5 md:py-2 text-sm rounded-lg hover:bg-blue-700 transition"
+            >
+              {showForm ? '취소' : '+ 제품 등록'}
+            </button>
+          </div>
         </div>
+
+        {/* 기획세트 구성(BOM) 관리 — 세트 1개에 필요한 구성품·소요량 정의. 조립은 입출고 기록에서 실행 */}
+        {showSetModal && (
+          <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center p-4 overflow-y-auto" onClick={() => setShowSetModal(false)}>
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl mt-16 p-5" onClick={e => e.stopPropagation()}>
+              <div className="flex items-start justify-between mb-1">
+                <h2 className="text-lg font-semibold">기획세트 구성</h2>
+                <button onClick={() => setShowSetModal(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">✕</button>
+              </div>
+              <p className="text-xs text-gray-400 mb-4">
+                세트 1개를 만드는 데 필요한 구성품과 수량을 정의합니다. 실제 조립(구성품 차감 + 세트 입고)은 입출고 기록 페이지의 &lsquo;조립&rsquo;에서 실행합니다.
+              </p>
+
+              <label className="block text-sm font-medium text-gray-700 mb-1">세트 제품</label>
+              <select
+                value={selectedSetId}
+                onChange={e => { setSelectedSetId(e.target.value); setComponentForm({ product_id: '', quantity: 1 }) }}
+                className="w-full border rounded-lg px-3 py-2 text-sm mb-4"
+              >
+                <option value="">세트로 관리할 제품을 선택하세요</option>
+                {products.filter(p => p.is_active).map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.product_name} ({p.product_code}){setItems.some(s => s.set_product_id === p.id) ? ' · 세트' : ''}
+                  </option>
+                ))}
+              </select>
+
+              {selectedSetId && (
+                <>
+                  <div className="border rounded-lg divide-y mb-3">
+                    {setItems.filter(s => s.set_product_id === selectedSetId).length === 0 ? (
+                      <p className="text-sm text-gray-400 text-center py-4">아직 구성품이 없습니다.</p>
+                    ) : (
+                      setItems.filter(s => s.set_product_id === selectedSetId).map(s => {
+                        const comp = products.find(p => p.id === s.component_product_id)
+                        return (
+                          <div key={s.id} className="flex items-center justify-between px-3 py-2">
+                            <span className="text-sm">
+                              {comp?.product_name || '(삭제된 제품)'}
+                              <span className="text-xs text-gray-400 ml-2">{comp?.product_code}</span>
+                            </span>
+                            <div className="flex items-center gap-3">
+                              <span className="text-sm font-semibold">{s.quantity}개</span>
+                              <button onClick={() => removeComponent(s.id)} className="text-xs text-red-500 hover:underline">삭제</button>
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+
+                  <form onSubmit={addComponent} className="flex flex-wrap items-end gap-2">
+                    <div className="flex-1 min-w-[200px]">
+                      <label className="block text-xs text-gray-500 mb-1">구성품 추가</label>
+                      <select
+                        value={componentForm.product_id}
+                        onChange={e => setComponentForm({ ...componentForm, product_id: e.target.value })}
+                        className="w-full border rounded-lg px-3 py-2 text-sm"
+                      >
+                        <option value="">제품 선택</option>
+                        {products.filter(p => p.is_active && p.id !== selectedSetId).map(p => (
+                          <option key={p.id} value={p.id}>{p.product_name} ({p.product_code})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="w-24">
+                      <label className="block text-xs text-gray-500 mb-1">소요 수량</label>
+                      <input
+                        type="number" min={1}
+                        value={componentForm.quantity}
+                        onChange={e => setComponentForm({ ...componentForm, quantity: Number(e.target.value) })}
+                        className="w-full border rounded-lg px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <button type="submit" className="bg-blue-600 text-white px-4 py-2 text-sm rounded-lg hover:bg-blue-700 transition">추가</button>
+                  </form>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* 등록 폼 */}
         {showForm && (
@@ -215,8 +360,8 @@ export default function ProductsPage() {
                   className="w-full border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="일반">일반</option>
+                  <option value="올리브영">올리브영</option>
                   <option value="홈쇼핑용">홈쇼핑용</option>
-                  <option value="라이브커머스용">라이브커머스용</option>
                 </select>
               </div>
               <div>
@@ -489,6 +634,9 @@ export default function ProductsPage() {
                           <td className="py-2.5 pl-4 pr-2 text-sm font-medium text-gray-900 overflow-hidden">
                             <span className="flex items-center gap-1">
                               <span className="truncate">{product.product_name}</span>
+                              {setItems.some(s => s.set_product_id === product.id) && (
+                                <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded shrink-0" title="구성이 정의된 기획세트">세트</span>
+                              )}
                               {hasSetKeyword(product.product_name) && (
                                 <span className="text-orange-400 text-xs shrink-0" title="세트/기획 가능성 — 일괄 OFF 자동 제외">⚠</span>
                               )}
@@ -498,8 +646,9 @@ export default function ProductsPage() {
                           <td className="py-2.5 px-2">
                             <span className={`px-2 py-0.5 rounded text-xs ${
                               product.version === '홈쇼핑용' ? 'bg-purple-100 text-purple-800' :
-                              product.version === '라이브커머스용' ? 'bg-orange-100 text-orange-800' :
-                              'bg-gray-100 text-gray-700'
+                              product.version === '올리브영' ? 'bg-green-100 text-green-800' :
+                              product.version === '일반' ? 'bg-gray-100 text-gray-700' :
+                              'bg-orange-100 text-orange-800'
                             }`}>
                               {product.version}
                             </span>

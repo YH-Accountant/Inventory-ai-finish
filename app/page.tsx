@@ -716,10 +716,13 @@ export default function Home() {
                           <div className="text-right shrink-0">
                             <p className={`text-xs font-bold ${
                               isTransfer ? 'text-blue-600'
+                              : tx.type === '조립' ? 'text-indigo-600'
                               : tx.type === '입고' ? 'text-emerald-600'
                               : 'text-red-600'
                             }`}>
-                              {isTransfer ? '↔' : tx.type === '입고' ? '+' : '-'}{tx.quantity.toLocaleString()}
+                              {/* 조립은 구성품(음수)·세트(양수)가 한 유형에 섞여 있어 부호를 수량에서 직접 읽는다 */}
+                              {isTransfer ? '↔' : tx.type === '조립' ? (tx.quantity < 0 ? '-' : '+') : tx.type === '입고' ? '+' : '-'}
+                              {Math.abs(tx.quantity).toLocaleString()}
                             </p>
                             <p className="text-xs text-gray-400">{new Date(tx.created_at).toLocaleDateString('ko-KR')}</p>
                           </div>
