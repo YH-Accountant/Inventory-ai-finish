@@ -245,13 +245,16 @@ export default function ApprovalsPage() {
       .maybeSingle()
     if (existing) return existing.id
 
+    // 문서 항목이 제품을 참조해야 해서 제출 시점에 만들긴 하지만, 아직 승인 전이므로
+    // 비활성으로 둔다 → 입출고·채팅의 제품 목록에 안 뜨고, 반려되면 그대로 묻힌다.
+    // 승인되면 문서 상세의 handleApprove가 활성화한다.
     const { data: created } = await supabase
       .from('products')
       .insert([{
         product_name: name,
         product_code: name.toUpperCase().replace(/\s+/g, '-').slice(0, 10),
         product_group: '미분류',
-        is_active: true,
+        is_active: false,
         company_id: cid
       }])
       .select('id')

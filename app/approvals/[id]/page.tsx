@@ -209,6 +209,20 @@ export default function ApprovalDetailPage() {
         approved_at: now
       }).eq('id', doc.id)
 
+      // 기안 시 "신규 제품"으로 만들어진 항목은 비활성 상태로 대기 중이므로 여기서 활성화한다.
+      // (반려된 문서의 신규 제품은 비활성인 채로 남아 목록에 노출되지 않는다)
+      const newProductIds = (doc.approval_document_items || [])
+        .map(i => i.product_id)
+        .filter(Boolean)
+      if (newProductIds.length > 0) {
+        const { error: activateError } = await supabase
+          .from('products')
+          .update({ is_active: true })
+          .in('id', newProductIds)
+          .eq('is_active', false)
+        if (activateError) console.error('신규 제품 활성화 실패:', activateError)
+      }
+
       if (doc.requested_by_user_id) {
         const { error: notifyError } = await supabase.from('notifications').insert([{
           company_id: profile?.company_id,

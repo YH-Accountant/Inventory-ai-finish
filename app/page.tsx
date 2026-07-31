@@ -697,7 +697,7 @@ export default function Home() {
                   <div className="space-y-2">
                     {transactions.map(tx => {
                       const isTransfer = tx.type === '이동' || tx.note?.includes('[이동]')
-                      const displayType = isTransfer ? '이동' : tx.type
+                      const displayType = isTransfer ? '이동' : tx.type === '조립' ? '세트생산' : tx.type
                       return (
                         <div key={tx.id} className="flex items-center gap-2">
                           <span className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded ${
